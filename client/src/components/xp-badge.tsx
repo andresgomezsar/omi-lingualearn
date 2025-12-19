@@ -15,7 +15,7 @@ export function XpBadge({ xp, level, className = "" }: XpBadgeProps) {
   return (
     <div className={`flex items-center gap-3 ${className}`}>
       <motion.div
-        className="relative flex items-center justify-center w-10 h-10 rounded-full bg-gradient-to-br from-primary to-purple-600"
+        className="relative flex items-center justify-center w-10 h-10 rounded-full bg-gradient-to-br from-primary to-teal-600"
         whileHover={{ scale: 1.05 }}
       >
         <Star className="h-5 w-5 text-white fill-white" />
@@ -37,7 +37,7 @@ export function XpBadge({ xp, level, className = "" }: XpBadgeProps) {
         </div>
         <div className="h-2 bg-muted rounded-full overflow-hidden mt-1">
           <motion.div
-            className="h-full bg-gradient-to-r from-primary to-purple-600 rounded-full"
+            className="h-full bg-gradient-to-r from-primary to-teal-600 rounded-full"
             initial={{ width: 0 }}
             animate={{ width: `${progress}%` }}
             transition={{ duration: 0.5, ease: "easeOut" }}

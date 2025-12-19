@@ -28,7 +28,7 @@ export function AchievementBadge({
         className={`
           relative w-16 h-16 rounded-full flex items-center justify-center
           ${unlocked 
-            ? "bg-gradient-to-br from-primary to-purple-600 text-white shadow-lg shadow-primary/30" 
+            ? "bg-gradient-to-br from-primary to-teal-600 text-white shadow-lg shadow-primary/30" 
             : "bg-muted text-muted-foreground"
           }
         `}

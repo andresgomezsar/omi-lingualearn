@@ -12,6 +12,16 @@ import {
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 
+// Omi connection type
+export interface OmiConnection {
+  id: number;
+  omiUid: string;
+  userId: string;
+  appId?: string;
+  status: string;
+  connectedAt: Date;
+}
+
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
@@ -37,6 +47,11 @@ export interface IStorage {
   getAchievements(userId: string): Promise<Achievement[]>;
   createAchievement(achievement: InsertAchievement): Promise<Achievement>;
   
+  // Omi connection methods
+  createOmiConnection(connection: { omiUid: string; userId: string; appId?: string; status: string }): Promise<OmiConnection>;
+  getOmiConnection(userId: string): Promise<OmiConnection | undefined>;
+  getOmiConnectionByUid(omiUid: string): Promise<OmiConnection | undefined>;
+  
   getOverviewStats(userId: string): Promise<{
     todayCompleted: number;
     todayTotal: number;
@@ -61,10 +76,12 @@ export class MemStorage implements IStorage {
   private sessions: Map<string, Session>;
   private dailyChallenges: Map<number, DailyChallenge>;
   private achievements: Map<number, Achievement>;
+  private omiConnections: Map<string, OmiConnection>;
   private nextItemId: number;
   private nextChallengeId: number;
   private nextAchievementId: number;
   private nextSessionId: number;
+  private nextOmiConnectionId: number;
 
   constructor() {
     this.users = new Map();
@@ -72,10 +89,12 @@ export class MemStorage implements IStorage {
     this.sessions = new Map();
     this.dailyChallenges = new Map();
     this.achievements = new Map();
+    this.omiConnections = new Map();
     this.nextItemId = 1;
     this.nextChallengeId = 1;
     this.nextAchievementId = 1;
     this.nextSessionId = 1;
+    this.nextOmiConnectionId = 1;
     
     this.initializeDemoData();
   }
@@ -400,6 +419,28 @@ export class MemStorage implements IStorage {
     };
     this.achievements.set(id, newAchievement);
     return newAchievement;
+  }
+
+  async createOmiConnection(connection: { omiUid: string; userId: string; appId?: string; status: string }): Promise<OmiConnection> {
+    const id = this.nextOmiConnectionId++;
+    const newConnection: OmiConnection = {
+      id,
+      omiUid: connection.omiUid,
+      userId: connection.userId,
+      appId: connection.appId,
+      status: connection.status,
+      connectedAt: new Date(),
+    };
+    this.omiConnections.set(connection.userId, newConnection);
+    return newConnection;
+  }
+
+  async getOmiConnection(userId: string): Promise<OmiConnection | undefined> {
+    return this.omiConnections.get(userId);
+  }
+
+  async getOmiConnectionByUid(omiUid: string): Promise<OmiConnection | undefined> {
+    return Array.from(this.omiConnections.values()).find(c => c.omiUid === omiUid);
   }
 
   async getOverviewStats(userId: string): Promise<{

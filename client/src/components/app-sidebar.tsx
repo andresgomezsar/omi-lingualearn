@@ -45,7 +45,7 @@ export function AppSidebar({ streak = 0, xp = 0, level = 1 }: AppSidebarProps) {
     <Sidebar>
       <SidebarHeader className="p-4">
         <Link href="/dashboard" className="flex items-center gap-2" data-testid="link-logo">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-teal-600 flex items-center justify-center">
             <Zap className="h-6 w-6 text-white" />
           </div>
           <div>

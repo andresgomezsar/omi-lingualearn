@@ -113,7 +113,7 @@ export default function ProgressPage() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.25 }}
         >
-          <Card className="bg-gradient-to-br from-primary to-purple-600 text-white">
+          <Card className="bg-gradient-to-br from-primary to-teal-600 text-white">
             <CardContent className="p-6">
               <div className="text-center">
                 <p className="text-sm text-white/80 mb-1">Current Level</p>

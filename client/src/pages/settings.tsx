@@ -1,14 +1,19 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
+import { useQuery } from "@tanstack/react-query";
 import { 
   Settings as SettingsIcon, 
   Globe, 
   Bell, 
   Moon, 
   Bluetooth,
-  User,
   Volume2,
-  Clock
+  Clock,
+  Copy,
+  Check,
+  ExternalLink,
+  Info,
+  Zap
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -17,15 +22,71 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
 import { useTheme } from "@/lib/theme-provider";
+import { useToast } from "@/hooks/use-toast";
+
+interface OmiSetupInfo {
+  webhooks: {
+    transcript: string;
+    memory: string;
+  };
+  manifest_url: string;
+  setup_complete_url: string;
+  app_home_url: string;
+  instructions: string[];
+}
 
 export default function Settings() {
   const { theme, setTheme } = useTheme();
+  const { toast } = useToast();
   const [notifications, setNotifications] = useState(true);
   const [soundEffects, setSoundEffects] = useState(true);
   const [dailyReminder, setDailyReminder] = useState("09:00");
   const [nativeLanguage, setNativeLanguage] = useState("english");
   const [targetLanguage, setTargetLanguage] = useState("spanish");
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  const { data: setupInfo } = useQuery<OmiSetupInfo>({
+    queryKey: ["/api/omi/setup-info"],
+  });
+
+  const { data: omiStatus } = useQuery<{ connected: boolean }>({
+    queryKey: ["/api/omi/status"],
+  });
+
+  const copyToClipboard = async (text: string, field: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedField(field);
+      toast({
+        title: "Copied!",
+        description: "URL copied to clipboard",
+      });
+      setTimeout(() => setCopiedField(null), 2000);
+    } catch (err) {
+      toast({
+        title: "Error",
+        description: "Failed to copy to clipboard",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const CopyButton = ({ text, field }: { text: string; field: string }) => (
+    <Button
+      variant="ghost"
+      size="icon"
+      onClick={() => copyToClipboard(text, field)}
+      data-testid={`button-copy-${field}`}
+    >
+      {copiedField === field ? (
+        <Check className="h-4 w-4 text-green-500" />
+      ) : (
+        <Copy className="h-4 w-4" />
+      )}
+    </Button>
+  );
 
   return (
     <div className="p-6 space-y-6 max-w-3xl mx-auto">
@@ -51,6 +112,155 @@ export default function Settings() {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.1 }}
+      >
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
+                <Bluetooth className="h-5 w-5 text-primary" />
+                <CardTitle className="font-display">Omi Device Setup</CardTitle>
+              </div>
+              {omiStatus?.connected ? (
+                <Badge variant="default" className="bg-green-500">
+                  <Check className="h-3 w-3 mr-1" /> Connected
+                </Badge>
+              ) : (
+                <Badge variant="secondary">Not Connected</Badge>
+              )}
+            </div>
+            <CardDescription>
+              Connect your Omi AI necklace to analyze your conversations
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="bg-muted/50 p-4 rounded-lg space-y-3">
+              <div className="flex items-start gap-2">
+                <Info className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                <div className="text-sm text-muted-foreground">
+                  <p className="font-medium text-foreground mb-2">How to connect:</p>
+                  <ol className="list-decimal list-inside space-y-1">
+                    {setupInfo?.instructions.map((instruction, index) => (
+                      <li key={index}>{instruction}</li>
+                    ))}
+                  </ol>
+                </div>
+              </div>
+            </div>
+
+            <Separator />
+
+            <div className="space-y-4">
+              <h4 className="font-medium text-sm text-foreground flex items-center gap-2">
+                <Zap className="h-4 w-4" />
+                Webhook URLs
+              </h4>
+              
+              <div className="space-y-2">
+                <Label htmlFor="transcript-webhook" className="text-xs text-muted-foreground">
+                  Real-time Transcript Webhook (required)
+                </Label>
+                <div className="flex gap-2">
+                  <Input 
+                    id="transcript-webhook"
+                    value={setupInfo?.webhooks.transcript || ""}
+                    readOnly
+                    className="font-mono text-xs"
+                    data-testid="input-transcript-webhook"
+                  />
+                  <CopyButton text={setupInfo?.webhooks.transcript || ""} field="transcript" />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="memory-webhook" className="text-xs text-muted-foreground">
+                  Memory Trigger Webhook (optional)
+                </Label>
+                <div className="flex gap-2">
+                  <Input 
+                    id="memory-webhook"
+                    value={setupInfo?.webhooks.memory || ""}
+                    readOnly
+                    className="font-mono text-xs"
+                    data-testid="input-memory-webhook"
+                  />
+                  <CopyButton text={setupInfo?.webhooks.memory || ""} field="memory" />
+                </div>
+              </div>
+            </div>
+
+            <Separator />
+
+            <div className="space-y-4">
+              <h4 className="font-medium text-sm text-foreground">App Configuration URLs</h4>
+              
+              <div className="space-y-2">
+                <Label htmlFor="manifest-url" className="text-xs text-muted-foreground">
+                  Chat Tools Manifest URL
+                </Label>
+                <div className="flex gap-2">
+                  <Input 
+                    id="manifest-url"
+                    value={setupInfo?.manifest_url || ""}
+                    readOnly
+                    className="font-mono text-xs"
+                    data-testid="input-manifest-url"
+                  />
+                  <CopyButton text={setupInfo?.manifest_url || ""} field="manifest" />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Enables AI chat tools: analyze speech, get learning status, add to queue
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="setup-complete-url" className="text-xs text-muted-foreground">
+                  Setup Complete URL
+                </Label>
+                <div className="flex gap-2">
+                  <Input 
+                    id="setup-complete-url"
+                    value={setupInfo?.setup_complete_url || ""}
+                    readOnly
+                    className="font-mono text-xs"
+                    data-testid="input-setup-complete-url"
+                  />
+                  <CopyButton text={setupInfo?.setup_complete_url || ""} field="setup-complete" />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="app-home-url" className="text-xs text-muted-foreground">
+                  App Home URL
+                </Label>
+                <div className="flex gap-2">
+                  <Input 
+                    id="app-home-url"
+                    value={setupInfo?.app_home_url || ""}
+                    readOnly
+                    className="font-mono text-xs"
+                    data-testid="input-app-home-url"
+                  />
+                  <CopyButton text={setupInfo?.app_home_url || ""} field="app-home" />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <Button variant="outline" asChild data-testid="button-open-omi-docs">
+                <a href="https://docs.omi.me/doc/developer/apps/Introduction" target="_blank" rel="noopener noreferrer">
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                  Omi Developer Docs
+                </a>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.15 }}
       >
         <Card>
           <CardHeader>
@@ -105,49 +315,6 @@ export default function Settings() {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.15 }}
-      >
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Bluetooth className="h-5 w-5 text-primary" />
-              <CardTitle className="font-display">Omi Device</CardTitle>
-            </div>
-            <CardDescription>
-              Manage your Omi necklace connection
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>Device Status</Label>
-                <p className="text-sm text-muted-foreground">No device connected</p>
-              </div>
-              <Button variant="outline" data-testid="button-connect-omi">
-                Connect Device
-              </Button>
-            </div>
-            <Separator />
-            <div className="space-y-2">
-              <Label htmlFor="webhook-url">Webhook URL</Label>
-              <Input 
-                id="webhook-url"
-                value="https://your-app.replit.app/api/omi/audio"
-                readOnly
-                className="font-mono text-sm"
-                data-testid="input-webhook-url"
-              />
-              <p className="text-xs text-muted-foreground">
-                Configure this URL in your Omi app settings to enable audio streaming
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      </motion.div>
-
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.2 }}
       >
         <Card>
@@ -161,7 +328,7 @@ export default function Settings() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-4">
               <div className="space-y-0.5">
                 <Label htmlFor="notifications">Push Notifications</Label>
                 <p className="text-sm text-muted-foreground">
@@ -176,7 +343,7 @@ export default function Settings() {
               />
             </div>
 
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-4">
               <div className="space-y-0.5">
                 <Label htmlFor="sound">Sound Effects</Label>
                 <p className="text-sm text-muted-foreground">

@@ -72,7 +72,7 @@ export default function Landing() {
       <header className="sticky top-0 z-50 border-b bg-background/80 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-2">
-            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center">
+            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-primary to-teal-600 flex items-center justify-center">
               <Zap className="h-5 w-5 text-white" />
             </div>
             <span className="font-display font-bold text-xl">LinguaFlow</span>
@@ -147,7 +147,7 @@ export default function Landing() {
               transition={{ delay: 0.2 }}
               className="relative"
             >
-              <div className="absolute inset-0 bg-gradient-to-br from-primary/20 to-purple-600/20 rounded-3xl blur-3xl" />
+              <div className="absolute inset-0 bg-gradient-to-br from-primary/20 to-teal-600/20 rounded-3xl blur-3xl" />
               <Card className="relative bg-card/80 backdrop-blur border-2">
                 <CardContent className="p-8">
                   <div className="space-y-6">
@@ -272,7 +272,7 @@ export default function Landing() {
         </div>
       </section>
 
-      <section className="py-24 bg-gradient-to-br from-primary to-purple-600 text-white">
+      <section className="py-24 bg-gradient-to-br from-primary to-teal-600 text-white">
         <div className="max-w-4xl mx-auto px-6 text-center">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -305,7 +305,7 @@ export default function Landing() {
         <div className="max-w-7xl mx-auto px-6">
           <div className="flex flex-col md:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-teal-600 flex items-center justify-center">
                 <Zap className="h-4 w-4 text-white" />
               </div>
               <span className="font-display font-bold">LinguaFlow</span>

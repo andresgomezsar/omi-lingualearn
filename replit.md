@@ -11,15 +11,16 @@ The application is fully functional with:
 - Learning items queue with spaced repetition scheduling
 - Progress tracking with weekly activity charts
 - Achievement system for gamification
-- Settings page with language and notification preferences
+- Settings page with Omi device setup and language preferences
 - Dark/light theme support
+- **Full Omi Integration** with webhooks and chat tools
 
 ## Tech Stack
 - **Frontend**: React, TypeScript, TailwindCSS, Framer Motion, Shadcn UI
 - **Backend**: Express.js, TypeScript
 - **AI**: Gemini AI (via Replit AI Integrations)
 - **Database**: PostgreSQL (available), currently using in-memory storage
-- **Styling**: Custom playful theme with Fredoka/Inter fonts
+- **Styling**: Fresh teal/green theme with Fredoka/Inter fonts
 
 ## Project Structure
 ```
@@ -30,18 +31,36 @@ client/
     lib/            # Utilities (queryClient, theme-provider)
     hooks/          # Custom React hooks
 server/
-  routes.ts         # API endpoints
+  routes.ts         # API endpoints including Omi integration
   storage.ts        # Data storage with SM-2 algorithm
 shared/
   schema.ts         # TypeScript types and Drizzle schema
 ```
 
-## Key Features
-1. **Omi Integration**: Webhooks at `/api/omi/audio` and `/api/omi/transcript` for processing speech
-2. **Gemini Analysis**: Analyzes text for grammar/vocabulary issues
-3. **SM-2 Algorithm**: Implements spaced repetition for optimal review intervals
-4. **Gamification**: XP, levels, streaks, and achievements
-5. **Responsive Design**: Works on all device sizes with sidebar navigation
+## Omi Integration (Complete)
+
+### Endpoints
+- `GET /.well-known/omi-tools.json` - Chat tools manifest for Omi App Store
+- `POST /api/omi/webhook/transcript` - Real-time transcript processing
+- `POST /api/omi/webhook/memory` - Memory trigger when conversation ends
+- `POST /api/omi/setup-complete` - Callback when user installs the app
+- `GET /api/omi/setup-info` - Returns all webhook URLs for setup
+- `GET /api/omi/status` - Check if Omi is connected
+
+### Chat Tools
+1. **analyze_speech** - Analyze text for grammar/vocabulary issues
+2. **get_learning_status** - Get user's streak, XP, level, and progress
+3. **add_to_learning_queue** - Add phrases to spaced repetition queue
+4. **get_daily_challenges** - Get today's practice challenges
+
+### Setup Flow
+1. User opens Settings page in LinguaFlow
+2. Copies webhook URLs shown on the page
+3. Creates app in Omi mobile app → Apps → Create App
+4. Selects "External Integration" capability
+5. Pastes the webhook URLs and manifest URL
+6. Saves and installs the app
+7. Setup complete callback is triggered
 
 ## API Endpoints
 - `GET /api/stats/overview` - Dashboard statistics
@@ -52,19 +71,19 @@ shared/
 - `GET /api/learning-items` - All learning items
 - `POST /api/learning-items` - Create learning item
 - `GET /api/achievements` - User achievements
-- `POST /api/omi/audio` - Omi audio webhook
-- `POST /api/omi/transcript` - Omi transcript webhook
 - `POST /api/analyze-text` - Analyze text with Gemini
 
 ## Design System
-- Primary: Purple (#8B5CF6)
+- Primary: Teal (#14B8A6)
 - Secondary: Yellow (#FACC15)
-- Accent: Teal (#14B8A6)
+- Accent: Blue (#3B82F6)
 - Fonts: Fredoka (display), Inter (body)
 - Animations: Framer Motion for playful interactions
 
 ## User Preferences
+- Fresh teal/green color scheme (no purple)
 - Playful, Duolingo-inspired design
 - No emojis in UI
 - Smooth animations throughout
 - Dark mode support
+- Working Omi backend integration (not just frontend mockups)

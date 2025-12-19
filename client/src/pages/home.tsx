@@ -120,7 +120,7 @@ export default function Home() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.25 }}
         >
-          <Card className="bg-gradient-to-br from-primary to-purple-600 text-white">
+          <Card className="bg-gradient-to-br from-primary to-teal-600 text-white">
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div className="space-y-1">

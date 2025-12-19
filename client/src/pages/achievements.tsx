@@ -47,7 +47,7 @@ export default function Achievements() {
         animate={{ opacity: 1, y: 0 }}
         className="flex items-center gap-3"
       >
-        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center">
+        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary to-teal-600 flex items-center justify-center">
           <Trophy className="h-6 w-6 text-white" />
         </div>
         <div>
@@ -65,10 +65,10 @@ export default function Achievements() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.1 }}
       >
-        <Card className="bg-gradient-to-r from-primary/10 via-purple-500/10 to-accent/10">
+        <Card className="bg-gradient-to-r from-primary/10 via-teal-500/10 to-accent/10">
           <CardContent className="p-6">
             <div className="flex items-center gap-6">
-              <div className="w-20 h-20 rounded-full bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center text-white">
+              <div className="w-20 h-20 rounded-full bg-gradient-to-br from-primary to-teal-600 flex items-center justify-center text-white">
                 <Trophy className="h-10 w-10" />
               </div>
               <div className="flex-1">
@@ -77,7 +77,7 @@ export default function Achievements() {
                 </h3>
                 <div className="h-3 bg-muted rounded-full overflow-hidden">
                   <motion.div
-                    className="h-full bg-gradient-to-r from-primary to-purple-600 rounded-full"
+                    className="h-full bg-gradient-to-r from-primary to-teal-600 rounded-full"
                     initial={{ width: 0 }}
                     animate={{ width: `${progressPercent}%` }}
                     transition={{ duration: 0.8, ease: "easeOut" }}
@@ -145,7 +145,7 @@ export default function Achievements() {
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: 0.5 + index * 0.1 }}
                   >
-                    <div className="w-12 h-12 rounded-full bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center text-white">
+                    <div className="w-12 h-12 rounded-full bg-gradient-to-br from-primary to-teal-600 flex items-center justify-center text-white">
                       {achievement.icon}
                     </div>
                     <div className="flex-1">
