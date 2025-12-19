@@ -1,0 +1,448 @@
+# Building a passive language learning app with Omi and Gemini
+
+Omi's audio streaming webhook delivers raw **PCM16 mono audio at 16kHz**, while Gemini's native audio understanding can process up to **9.5 hours of speech** with structured JSON output—together enabling a powerful passive language learning system. This technical guide covers the complete integration: receiving streaming audio from Omi devices, storing segments in GCS, analyzing speech patterns with Gemini, and delivering spaced-repetition challenges via Omi's push notification API.
+
+The architecture centers on four components: a FastAPI audio bytes server that buffers incoming PCM streams, a GCS storage layer organized by user and session, Gemini 2.5 Flash for cost-effective language analysis (~$0.003 per 5-minute segment), and an SM-2 spaced repetition system that drives daily notification challenges.
+
+---
+
+## Omi audio streaming delivers raw PCM via simple HTTP webhooks
+
+Omi devices stream audio to your server via HTTP POST requests—not WebSockets—making integration straightforward. The audio arrives as raw bytes with metadata in query parameters:
+
+```
+POST /audio?sample_rate=16000&uid=user123
+Content-Type: application/octet-stream
+Body: [raw PCM16 audio bytes]
+```
+
+**Audio specifications are consistent across DevKit2 and DevKit1 v1.0.4+:**
+- **Format**: Raw PCM16 (Linear PCM, 16-bit signed integers, little-endian)
+- **Sample Rate**: 16,000 Hz (8,000 Hz on older DevKit1 v1.0.2)
+- **Channels**: Mono
+- **Bytes per sample**: 2 (16-bit)
+
+The critical implementation detail: **return 200 OK immediately** and process audio asynchronously. Slow responses cause device timeouts. Here's the core FastAPI pattern:
+
+```python
+from fastapi import FastAPI, Request
+from collections import defaultdict
+import asyncio
+
+app = FastAPI()
+audio_buffers = defaultdict(bytes)
+
+@app.post("/audio")
+async def receive_audio(request: Request, uid: str, sample_rate: int = 16000):
+    audio_bytes = await request.body()
+    audio_buffers[uid] += audio_bytes
+    
+    # Process when buffer hits 60 seconds (16000 samples/sec * 2 bytes * 60 sec)
+    BUFFER_THRESHOLD = sample_rate * 2 * 60
+    if len(audio_buffers[uid]) >= BUFFER_THRESHOLD:
+        chunk = audio_buffers[uid][:BUFFER_THRESHOLD]
+        audio_buffers[uid] = audio_buffers[uid][BUFFER_THRESHOLD:]
+        asyncio.create_task(process_and_store(chunk, uid, sample_rate))
+    
+    return {"status": "ok"}
+```
+
+To convert raw PCM to WAV for storage and analysis, prepend a standard WAV header:
+
+```python
+import struct
+import io
+
+def create_wav(pcm_bytes: bytes, sample_rate: int = 16000) -> bytes:
+    """Prepend WAV header to raw PCM16 bytes"""
+    wav_buffer = io.BytesIO()
+    num_channels, bits_per_sample = 1, 16
+    byte_rate = sample_rate * num_channels * bits_per_sample // 8
+    block_align = num_channels * bits_per_sample // 8
+    
+    wav_buffer.write(b'RIFF')
+    wav_buffer.write(struct.pack('<I', 36 + len(pcm_bytes)))
+    wav_buffer.write(b'WAVEfmt ')
+    wav_buffer.write(struct.pack('<IHHIIHH', 16, 1, num_channels, 
+                                  sample_rate, byte_rate, block_align, bits_per_sample))
+    wav_buffer.write(b'data')
+    wav_buffer.write(struct.pack('<I', len(pcm_bytes)))
+    wav_buffer.write(pcm_bytes)
+    return wav_buffer.getvalue()
+```
+
+---
+
+## Transcript timestamps enable precise audio-to-text correlation
+
+Omi's transcript webhook delivers segments with **floating-point seconds** from session start—the key to slicing stored audio for Gemini analysis:
+
+```json
+{
+  "session_id": "abc123",
+  "segments": [
+    {"text": "I think we should...", "speaker": "SPEAKER_00", "is_user": true, "start": 0.0, "end": 2.5},
+    {"text": "That's a good idea", "speaker": "SPEAKER_01", "is_user": false, "start": 2.8, "end": 5.2}
+  ]
+}
+```
+
+Calculate byte positions from timestamps using this formula:
+
+```python
+def timestamp_to_byte_offset(timestamp_seconds: float, sample_rate: int = 16000) -> int:
+    """Convert transcript timestamp to byte position in PCM audio"""
+    bytes_per_sample = 2  # 16-bit audio
+    return int(timestamp_seconds * sample_rate * bytes_per_sample)
+
+# Extract segment audio
+start_byte = timestamp_to_byte_offset(segment["start"])
+end_byte = timestamp_to_byte_offset(segment["end"])
+segment_audio = full_audio_bytes[start_byte:end_byte]
+```
+
+For cleaner extraction with padding, use **pydub** (requires ffmpeg):
+
+```python
+from pydub import AudioSegment
+
+def extract_segment(audio_path: str, start_sec: float, end_sec: float, 
+                    padding_ms: int = 100) -> AudioSegment:
+    """Extract audio segment with natural padding"""
+    audio = AudioSegment.from_file(audio_path)
+    start_ms = max(0, int(start_sec * 1000) - padding_ms)
+    end_ms = min(len(audio), int(end_sec * 1000) + padding_ms)
+    return audio[start_ms:end_ms]
+```
+
+---
+
+## Omi's APIs provide memory access and push notifications
+
+App development requires understanding three key integration points: OAuth for user authentication, the Conversations API for transcript history, and the Notifications API for daily challenges.
+
+**Authentication uses Bearer tokens with format `omi_dev_*`:**
+```python
+headers = {"Authorization": "Bearer omi_dev_your_api_key_here"}
+```
+
+**Fetch conversation history with transcripts:**
+```python
+import requests
+
+def get_user_conversations(api_key: str, days_back: int = 1):
+    """Retrieve recent conversations with full transcripts"""
+    from datetime import datetime, timedelta
+    
+    start_date = (datetime.utcnow() - timedelta(days=days_back)).isoformat() + "Z"
+    
+    response = requests.get(
+        "https://api.omi.me/v1/dev/user/conversations",
+        headers={"Authorization": f"Bearer {api_key}"},
+        params={
+            "include_transcript": "true",
+            "start_date": start_date,
+            "limit": 50
+        }
+    )
+    return response.json()
+```
+
+**Send daily challenge notifications:**
+```python
+def send_challenge_notification(app_id: str, app_secret: str, user_id: str, message: str):
+    """Send push notification to user's Omi app"""
+    response = requests.post(
+        f"https://api.omi.me/v2/integrations/{app_id}/notification",
+        params={"uid": user_id, "message": message},
+        headers={"Authorization": f"Bearer {app_secret}"}
+    )
+    return response.json()
+
+# Example usage
+send_challenge_notification(
+    app_id="your_app_id",
+    app_secret="your_app_secret", 
+    user_id="user_123",
+    message="🎯 Yesterday you said 'more better' 3 times. Today's challenge: use 'much better' in conversation!"
+)
+```
+
+**Rate limits to respect:**
+- 100 requests/minute per API key
+- 10,000 requests/day per user  
+- Proactive notifications: 1 per user per app every 30 seconds
+
+---
+
+## Gemini 2.5 Flash provides cost-effective audio analysis
+
+Google's Gemini API natively understands speech at **32 tokens per second** of audio, enabling sophisticated language analysis without separate transcription. The `google-genai` SDK handles audio files directly:
+
+```python
+from google import genai
+from google.genai import types
+from pydantic import BaseModel
+from typing import List, Literal
+
+# Install: pip install google-genai
+
+client = genai.Client(api_key="YOUR_GEMINI_API_KEY")
+
+class GrammarIssue(BaseModel):
+    timestamp: str
+    original: str
+    corrected: str
+    explanation: str
+
+class LanguageAnalysis(BaseModel):
+    cefr_level: Literal["A1", "A2", "B1", "B2", "C1", "C2"]
+    fluency_score: int
+    grammar_issues: List[GrammarIssue]
+    vocabulary_suggestions: List[str]
+    pronunciation_notes: List[str]
+    daily_challenge: str
+
+def analyze_speech_for_learning(audio_path: str, native_language: str = "Unknown") -> dict:
+    """Analyze audio for language learning with structured output"""
+    
+    audio_file = client.files.upload(file=audio_path)
+    
+    prompt = f"""Analyze this spoken language recording for a learner whose native language is {native_language}.
+
+    Evaluate:
+    1. Grammar accuracy - identify errors with timestamps (MM:SS format)
+    2. Vocabulary level and suggestions for alternatives
+    3. Pronunciation patterns that need attention
+    4. Overall fluency (CEFR scale A1-C2)
+    
+    Generate a specific daily_challenge: one concrete practice sentence targeting their most common error pattern."""
+    
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[prompt, audio_file],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=LanguageAnalysis,
+        )
+    )
+    
+    import json
+    return json.loads(response.text)
+```
+
+**Gemini audio specifications:**
+- Supported formats: WAV, MP3, FLAC, AAC, OGG, AIFF
+- Maximum duration: **9.5 hours** per request
+- Audio is downsampled to 16 Kbps internally
+- Files >20MB should use the Files API (shown above)
+- Cost estimate: **~$0.003 per 5-minute analysis** with Flash
+
+For batch processing multiple segments efficiently:
+
+```python
+import asyncio
+
+async def batch_analyze_segments(audio_paths: List[str]) -> List[dict]:
+    """Process multiple audio segments concurrently"""
+    
+    async def analyze_one(path: str) -> dict:
+        audio_file = client.files.upload(file=path)
+        response = await client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=["Analyze for grammar and vocabulary issues", audio_file]
+        )
+        return {"path": path, "analysis": response.text}
+    
+    return await asyncio.gather(*[analyze_one(p) for p in audio_paths])
+```
+
+---
+
+## GCS storage with signed URLs enables secure audio retrieval
+
+Organize audio by user and session for efficient retrieval during spaced repetition reviews:
+
+```python
+from google.cloud import storage
+from datetime import datetime, timedelta
+
+class AudioStorageService:
+    def __init__(self, bucket_name: str):
+        self.client = storage.Client()
+        self.bucket = self.client.bucket(bucket_name)
+    
+    def store_segment(self, audio_bytes: bytes, user_id: str, 
+                      session_id: str, segment_id: str) -> str:
+        """Store audio segment with organized path"""
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        blob_path = f"audio/{user_id}/{session_id}/segments/{segment_id}_{timestamp}.wav"
+        
+        blob = self.bucket.blob(blob_path)
+        blob.upload_from_string(audio_bytes, content_type="audio/wav")
+        return blob_path
+    
+    def get_playback_url(self, blob_path: str, expires_minutes: int = 15) -> str:
+        """Generate signed URL for secure playback"""
+        blob = self.bucket.blob(blob_path)
+        return blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(minutes=expires_minutes),
+            method="GET"
+        )
+
+# Recommended folder structure:
+# gs://language-learning/
+# ├── audio/{user_id}/{session_id}/
+# │   ├── full_recording.wav
+# │   └── segments/
+# │       ├── seg_001_0.0-5.5.wav
+# │       └── seg_002_5.5-12.3.wav
+# └── analysis/{user_id}/{date}.json
+```
+
+---
+
+## SM-2 spaced repetition drives the daily challenge system
+
+The SuperMemo 2 algorithm determines optimal review intervals. Each grammar issue or vocabulary gap becomes a learning item:
+
+```python
+from dataclasses import dataclass, field
+from datetime import datetime, timezone, timedelta
+from typing import Optional
+import json
+
+@dataclass
+class LearningItem:
+    item_id: str
+    audio_gcs_path: str
+    original_text: str
+    corrected_text: str
+    explanation: str
+    
+    # SM-2 state
+    ease_factor: float = 2.5
+    interval: int = 0  # days
+    repetitions: int = 0
+    due_date: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+def sm2_update(item: LearningItem, quality: int) -> LearningItem:
+    """
+    Update item based on review quality (0-5):
+    5: perfect, 4: hesitation, 3: difficult, 2: wrong but easy, 1: wrong, 0: blackout
+    """
+    if quality < 3:
+        item.repetitions = 0
+        item.interval = 1
+    else:
+        if item.repetitions == 0:
+            item.interval = 1
+        elif item.repetitions == 1:
+            item.interval = 6
+        else:
+            item.interval = round(item.interval * item.ease_factor)
+        item.repetitions += 1
+    
+    # Update ease factor
+    item.ease_factor = max(1.3, item.ease_factor + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02)))
+    item.due_date = datetime.now(timezone.utc) + timedelta(days=item.interval)
+    
+    return item
+
+class DailyChallengeGenerator:
+    def __init__(self, storage: AudioStorageService):
+        self.storage = storage
+        self.items: dict[str, LearningItem] = {}
+    
+    def add_from_analysis(self, user_id: str, analysis: dict, audio_path: str):
+        """Create learning items from Gemini analysis"""
+        for issue in analysis.get("grammar_issues", []):
+            item = LearningItem(
+                item_id=f"{user_id}_{datetime.utcnow().timestamp()}",
+                audio_gcs_path=audio_path,
+                original_text=issue["original"],
+                corrected_text=issue["corrected"],
+                explanation=issue["explanation"]
+            )
+            self.items[item.item_id] = item
+    
+    def get_daily_challenge(self, user_id: str) -> dict:
+        """Generate today's challenge from due items"""
+        now = datetime.now(timezone.utc)
+        due_items = [i for i in self.items.values() if i.due_date <= now]
+        due_items.sort(key=lambda x: x.due_date)
+        
+        if not due_items:
+            return {"message": "Great job! No reviews due today.", "items": []}
+        
+        top_item = due_items[0]
+        return {
+            "message": f"Yesterday you said: '{top_item.original_text}'. Try: '{top_item.corrected_text}'",
+            "explanation": top_item.explanation,
+            "audio_url": self.storage.get_playback_url(top_item.audio_gcs_path),
+            "item_id": top_item.item_id,
+            "total_due": len(due_items)
+        }
+```
+
+---
+
+## Complete daily pipeline ties everything together
+
+Here's the end-to-end flow that runs nightly to process the day's speech and queue tomorrow's challenges:
+
+```python
+import asyncio
+from datetime import datetime, timezone
+
+async def nightly_analysis_pipeline(user_id: str, api_key: str):
+    """Process yesterday's speech and generate tomorrow's challenges"""
+    
+    # 1. Fetch yesterday's conversations with transcripts
+    conversations = get_user_conversations(api_key, days_back=1)
+    
+    for conv in conversations:
+        session_id = conv["id"]
+        segments = conv.get("transcript_segments", [])
+        
+        # 2. For each segment with user speech, retrieve stored audio
+        for seg in segments:
+            if not seg.get("is_user", False):
+                continue
+                
+            audio_path = f"audio/{user_id}/{session_id}/segments/seg_{seg['start']}-{seg['end']}.wav"
+            
+            # 3. Analyze with Gemini
+            analysis = analyze_speech_for_learning(
+                audio_path=f"/tmp/{session_id}_{seg['start']}.wav",  # Downloaded from GCS
+                native_language="Spanish"  # From user profile
+            )
+            
+            # 4. Create learning items from issues found
+            challenge_gen.add_from_analysis(user_id, analysis, audio_path)
+    
+    # 5. Generate and send tomorrow's challenge notification
+    challenge = challenge_gen.get_daily_challenge(user_id)
+    
+    if challenge["items"]:
+        send_challenge_notification(
+            app_id=OMI_APP_ID,
+            app_secret=OMI_APP_SECRET,
+            user_id=user_id,
+            message=f"🎯 {challenge['message']}"
+        )
+
+# Schedule with Cloud Scheduler or cron
+# Run at 6 AM user's timezone daily
+```
+
+---
+
+## Conclusion
+
+Building this Omi language learning integration requires coordinating four systems: Omi's **PCM16 audio streaming** to a FastAPI webhook, **GCS storage** organized by user/session/segment, **Gemini 2.5 Flash** for structured language analysis, and an **SM-2 spaced repetition** engine driving notifications.
+
+The key technical insights: Omi delivers raw PCM (not encoded audio), so your server must handle byte-level buffering; transcript timestamps are floating-point seconds that map directly to byte offsets; Gemini's structured output with Pydantic schemas enables reliable JSON parsing for learning item creation; and Omi's notification rate limit (1 per 30 seconds per app) means daily challenges should be single, focused messages rather than batched reviews.
+
+For production deployment, add Redis for session caching, PostgreSQL for SM-2 state persistence, and Cloud Tasks for the nightly analysis pipeline. The total Gemini cost for analyzing 30 minutes of daily speech per user runs approximately **$0.02/day**—making this architecture economically viable at scale.
