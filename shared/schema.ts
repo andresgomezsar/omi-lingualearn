@@ -7,11 +7,13 @@ export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull().unique(),
   password: text("password").notNull(),
+  omiUid: varchar("omi_uid").unique(), // Omi device UID for authentication
   nativeLanguage: text("native_language").default("English"),
   targetLanguage: text("target_language").default("Spanish"),
   streak: integer("streak").default(0),
   totalXp: integer("total_xp").default(0),
   level: integer("level").default(1),
+  demoDataEnabled: boolean("demo_data_enabled").default(true), // Toggle for demo data
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -171,6 +173,17 @@ export const userFacts = pgTable("user_facts", {
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
 });
 
+// Challenge chat messages for discussing challenges with Gemini
+export const chatMessages = pgTable("chat_messages", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(),
+  challengeId: integer("challenge_id"), // Optional reference to active challenge
+  role: text("role").notNull(), // "user" or "assistant"
+  content: text("content").notNull(),
+  contextJson: text("context_json"), // Challenge/transcript context sent with this message
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+});
+
 // Generated lessons from audio analysis
 export const lessons = pgTable("lessons", {
   id: serial("id").primaryKey(),
@@ -251,6 +264,11 @@ export const insertUserFactSchema = createInsertSchema(userFacts).omit({
   createdAt: true,
 });
 
+export const insertChatMessageSchema = createInsertSchema(chatMessages).omit({
+  id: true,
+  createdAt: true,
+});
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type LearningItem = typeof learningItems.$inferSelect;
@@ -275,3 +293,5 @@ export type VoiceChallenge = typeof voiceChallenges.$inferSelect;
 export type InsertVoiceChallenge = z.infer<typeof insertVoiceChallengeSchema>;
 export type UserFact = typeof userFacts.$inferSelect;
 export type InsertUserFact = z.infer<typeof insertUserFactSchema>;
+export type ChatMessage = typeof chatMessages.$inferSelect;
+export type InsertChatMessage = z.infer<typeof insertChatMessageSchema>;

@@ -22,7 +22,9 @@ import {
   type VoiceChallenge,
   type InsertVoiceChallenge,
   type UserFact,
-  type InsertUserFact
+  type InsertUserFact,
+  type ChatMessage,
+  type InsertChatMessage
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 
@@ -105,6 +107,21 @@ export interface IStorage {
   getRandomUserFact(userId: string): Promise<UserFact | undefined>;
   updateUserFactUsage(id: number): Promise<UserFact | undefined>;
   
+  // Auth methods
+  getUserByOmiUid(omiUid: string): Promise<User | undefined>;
+  updateUserOmiUid(userId: string, omiUid: string): Promise<User | undefined>;
+  
+  // User preferences
+  updateUserPreferences(userId: string, updates: { demoDataEnabled?: boolean; nativeLanguage?: string; targetLanguage?: string }): Promise<User | undefined>;
+  
+  // Data reset methods
+  resetUserData(userId: string): Promise<void>;
+  
+  // Chat message methods
+  createChatMessage(message: InsertChatMessage): Promise<ChatMessage>;
+  getChatMessages(userId: string, challengeId?: number): Promise<ChatMessage[]>;
+  clearChatMessages(userId: string): Promise<void>;
+  
   getOverviewStats(userId: string): Promise<{
     todayCompleted: number;
     todayTotal: number;
@@ -137,6 +154,7 @@ export class MemStorage implements IStorage {
   private compiledAudioFiles: Map<number, CompiledAudioFile>;
   private voiceChallenges: Map<number, VoiceChallenge>;
   private userFacts: Map<number, UserFact>;
+  private chatMessages: Map<number, ChatMessage>;
   
   private nextItemId: number;
   private nextChallengeId: number;
@@ -150,6 +168,7 @@ export class MemStorage implements IStorage {
   private nextCompiledAudioFileId: number;
   private nextVoiceChallengeId: number;
   private nextUserFactId: number;
+  private nextChatMessageId: number;
 
   constructor() {
     this.users = new Map();
@@ -165,6 +184,7 @@ export class MemStorage implements IStorage {
     this.compiledAudioFiles = new Map();
     this.voiceChallenges = new Map();
     this.userFacts = new Map();
+    this.chatMessages = new Map();
     
     this.nextItemId = 1;
     this.nextChallengeId = 1;
@@ -178,6 +198,7 @@ export class MemStorage implements IStorage {
     this.nextCompiledAudioFileId = 1;
     this.nextVoiceChallengeId = 1;
     this.nextUserFactId = 1;
+    this.nextChatMessageId = 1;
     
     this.initializeDemoData();
   }
@@ -188,11 +209,13 @@ export class MemStorage implements IStorage {
       id: demoUserId,
       username: "demo",
       password: "demo",
+      omiUid: null,
       nativeLanguage: "English",
       targetLanguage: "Spanish",
       streak: 7,
       totalXp: 1250,
       level: 3,
+      demoDataEnabled: true,
       createdAt: new Date(),
     });
 
@@ -305,11 +328,13 @@ export class MemStorage implements IStorage {
     const user: User = { 
       ...insertUser, 
       id,
+      omiUid: null,
       nativeLanguage: "English",
       targetLanguage: "Spanish",
       streak: 0,
       totalXp: 0,
       level: 1,
+      demoDataEnabled: true,
       createdAt: new Date(),
     };
     this.users.set(id, user);
@@ -872,6 +897,102 @@ export class MemStorage implements IStorage {
     };
     this.userFacts.set(id, updated);
     return updated;
+  }
+
+  // Auth methods
+  async getUserByOmiUid(omiUid: string): Promise<User | undefined> {
+    return Array.from(this.users.values()).find(u => u.omiUid === omiUid);
+  }
+
+  async updateUserOmiUid(userId: string, omiUid: string): Promise<User | undefined> {
+    const user = this.users.get(userId);
+    if (!user) return undefined;
+    const updated = { ...user, omiUid };
+    this.users.set(userId, updated);
+    return updated;
+  }
+
+  // User preferences
+  async updateUserPreferences(userId: string, updates: { demoDataEnabled?: boolean; nativeLanguage?: string; targetLanguage?: string }): Promise<User | undefined> {
+    const user = this.users.get(userId);
+    if (!user) return undefined;
+    const updated = { ...user, ...updates };
+    this.users.set(userId, updated);
+    return updated;
+  }
+
+  // Data reset
+  async resetUserData(userId: string): Promise<void> {
+    // Clear learning items
+    Array.from(this.learningItems.entries()).forEach(([id, item]) => {
+      if (item.userId === userId) this.learningItems.delete(id);
+    });
+    // Clear sessions
+    Array.from(this.sessions.entries()).forEach(([key, session]) => {
+      if (session.userId === userId) this.sessions.delete(key);
+    });
+    // Clear challenges
+    Array.from(this.dailyChallenges.entries()).forEach(([id, challenge]) => {
+      if (challenge.userId === userId) this.dailyChallenges.delete(id);
+    });
+    // Clear achievements
+    Array.from(this.achievements.entries()).forEach(([id, achievement]) => {
+      if (achievement.userId === userId) this.achievements.delete(id);
+    });
+    // Clear voice challenges
+    Array.from(this.voiceChallenges.entries()).forEach(([id, vc]) => {
+      if (vc.userId === userId) this.voiceChallenges.delete(id);
+    });
+    // Clear user facts
+    Array.from(this.userFacts.entries()).forEach(([id, fact]) => {
+      if (fact.userId === userId) this.userFacts.delete(id);
+    });
+    // Clear chat messages
+    Array.from(this.chatMessages.entries()).forEach(([id, msg]) => {
+      if (msg.userId === userId) this.chatMessages.delete(id);
+    });
+    // Clear lessons
+    Array.from(this.lessons.entries()).forEach(([id, lesson]) => {
+      if (lesson.userId === userId) this.lessons.delete(id);
+    });
+    // Reset user stats
+    const user = this.users.get(userId);
+    if (user) {
+      this.users.set(userId, {
+        ...user,
+        streak: 0,
+        totalXp: 0,
+        level: 1
+      });
+    }
+  }
+
+  // Chat message methods
+  async createChatMessage(message: InsertChatMessage): Promise<ChatMessage> {
+    const id = this.nextChatMessageId++;
+    const newMessage: ChatMessage = {
+      id,
+      userId: message.userId,
+      challengeId: message.challengeId ?? null,
+      role: message.role,
+      content: message.content,
+      contextJson: message.contextJson ?? null,
+      createdAt: new Date(),
+    };
+    this.chatMessages.set(id, newMessage);
+    return newMessage;
+  }
+
+  async getChatMessages(userId: string, challengeId?: number): Promise<ChatMessage[]> {
+    return Array.from(this.chatMessages.values())
+      .filter(m => m.userId === userId && (challengeId === undefined || m.challengeId === challengeId))
+      .sort((a, b) => (a.createdAt?.getTime() || 0) - (b.createdAt?.getTime() || 0));
+  }
+
+  async clearChatMessages(userId: string): Promise<void> {
+    Array.from(this.chatMessages.entries()).forEach(([id, msg]) => {
+      if (msg.userId === userId) this.chatMessages.delete(id);
+    });
   }
 }
 
