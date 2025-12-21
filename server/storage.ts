@@ -18,7 +18,11 @@ import {
   type Lesson,
   type InsertLesson,
   type CompiledAudioFile,
-  type InsertCompiledAudioFile
+  type InsertCompiledAudioFile,
+  type VoiceChallenge,
+  type InsertVoiceChallenge,
+  type UserFact,
+  type InsertUserFact
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 
@@ -87,6 +91,20 @@ export interface IStorage {
   getCompiledAudioFiles(userId: string): Promise<CompiledAudioFile[]>;
   getCompiledAudioFilesInRange(userId: string, startTime: Date, endTime: Date): Promise<CompiledAudioFile[]>;
   
+  // Voice Challenge methods
+  createVoiceChallenge(challenge: InsertVoiceChallenge): Promise<VoiceChallenge>;
+  getVoiceChallenge(id: number): Promise<VoiceChallenge | undefined>;
+  getActiveVoiceChallenge(userId: string): Promise<VoiceChallenge | undefined>;
+  getVoiceChallenges(userId: string): Promise<VoiceChallenge[]>;
+  updateVoiceChallenge(id: number, updates: Partial<VoiceChallenge>): Promise<VoiceChallenge | undefined>;
+  completeVoiceChallenge(id: number, response: { transcript: string; audioUri?: string; feedback: any }): Promise<VoiceChallenge | undefined>;
+  
+  // User Fact methods
+  createUserFact(fact: InsertUserFact): Promise<UserFact>;
+  getUserFacts(userId: string): Promise<UserFact[]>;
+  getRandomUserFact(userId: string): Promise<UserFact | undefined>;
+  updateUserFactUsage(id: number): Promise<UserFact | undefined>;
+  
   getOverviewStats(userId: string): Promise<{
     todayCompleted: number;
     todayTotal: number;
@@ -117,6 +135,8 @@ export class MemStorage implements IStorage {
   private audioAnalyses: Map<number, AudioAnalysis>;
   private lessons: Map<number, Lesson>;
   private compiledAudioFiles: Map<number, CompiledAudioFile>;
+  private voiceChallenges: Map<number, VoiceChallenge>;
+  private userFacts: Map<number, UserFact>;
   
   private nextItemId: number;
   private nextChallengeId: number;
@@ -128,6 +148,8 @@ export class MemStorage implements IStorage {
   private nextAudioAnalysisId: number;
   private nextLessonId: number;
   private nextCompiledAudioFileId: number;
+  private nextVoiceChallengeId: number;
+  private nextUserFactId: number;
 
   constructor() {
     this.users = new Map();
@@ -141,6 +163,8 @@ export class MemStorage implements IStorage {
     this.audioAnalyses = new Map();
     this.lessons = new Map();
     this.compiledAudioFiles = new Map();
+    this.voiceChallenges = new Map();
+    this.userFacts = new Map();
     
     this.nextItemId = 1;
     this.nextChallengeId = 1;
@@ -152,6 +176,8 @@ export class MemStorage implements IStorage {
     this.nextAudioAnalysisId = 1;
     this.nextLessonId = 1;
     this.nextCompiledAudioFileId = 1;
+    this.nextVoiceChallengeId = 1;
+    this.nextUserFactId = 1;
     
     this.initializeDemoData();
   }
@@ -723,6 +749,129 @@ export class MemStorage implements IStorage {
       averageDaily: 4.2,
       cefrLevel: "B1",
     };
+  }
+
+  // Voice Challenge methods
+  async createVoiceChallenge(challenge: InsertVoiceChallenge): Promise<VoiceChallenge> {
+    const id = this.nextVoiceChallengeId++;
+    const newChallenge: VoiceChallenge = {
+      id,
+      userId: challenge.userId,
+      status: challenge.status ?? "pending",
+      sourceFact: challenge.sourceFact ?? null,
+      sourceFactId: challenge.sourceFactId ?? null,
+      prompt: challenge.prompt,
+      languageGoal: challenge.languageGoal ?? null,
+      targetLanguage: challenge.targetLanguage ?? "Spanish",
+      difficulty: challenge.difficulty ?? "intermediate",
+      responseTranscript: null,
+      responseAudioUri: null,
+      respondedAt: null,
+      feedbackJson: null,
+      grammarScore: null,
+      vocabularyScore: null,
+      pronunciationScore: null,
+      overallScore: null,
+      corrections: null,
+      xpEarned: 0,
+      createdAt: new Date(),
+      completedAt: null,
+      expiresAt: challenge.expiresAt ?? null,
+    };
+    this.voiceChallenges.set(id, newChallenge);
+    return newChallenge;
+  }
+
+  async getVoiceChallenge(id: number): Promise<VoiceChallenge | undefined> {
+    return this.voiceChallenges.get(id);
+  }
+
+  async getActiveVoiceChallenge(userId: string): Promise<VoiceChallenge | undefined> {
+    return Array.from(this.voiceChallenges.values())
+      .find(c => c.userId === userId && (c.status === "pending" || c.status === "active"));
+  }
+
+  async getVoiceChallenges(userId: string): Promise<VoiceChallenge[]> {
+    return Array.from(this.voiceChallenges.values())
+      .filter(c => c.userId === userId)
+      .sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0));
+  }
+
+  async updateVoiceChallenge(id: number, updates: Partial<VoiceChallenge>): Promise<VoiceChallenge | undefined> {
+    const challenge = this.voiceChallenges.get(id);
+    if (!challenge) return undefined;
+    const updated = { ...challenge, ...updates };
+    this.voiceChallenges.set(id, updated);
+    return updated;
+  }
+
+  async completeVoiceChallenge(id: number, response: { transcript: string; audioUri?: string; feedback: any }): Promise<VoiceChallenge | undefined> {
+    const challenge = this.voiceChallenges.get(id);
+    if (!challenge) return undefined;
+    
+    const feedback = response.feedback || {};
+    const xpEarned = Math.round((feedback.overallScore || 50) / 10) * 10;
+    
+    const updated: VoiceChallenge = {
+      ...challenge,
+      status: "completed",
+      responseTranscript: response.transcript,
+      responseAudioUri: response.audioUri ?? null,
+      respondedAt: new Date(),
+      feedbackJson: JSON.stringify(feedback),
+      grammarScore: feedback.grammarScore ?? null,
+      vocabularyScore: feedback.vocabularyScore ?? null,
+      pronunciationScore: feedback.pronunciationScore ?? null,
+      overallScore: feedback.overallScore ?? null,
+      corrections: feedback.corrections ? JSON.stringify(feedback.corrections) : null,
+      xpEarned,
+      completedAt: new Date(),
+    };
+    this.voiceChallenges.set(id, updated);
+    return updated;
+  }
+
+  // User Fact methods
+  async createUserFact(fact: InsertUserFact): Promise<UserFact> {
+    const id = this.nextUserFactId++;
+    const newFact: UserFact = {
+      id,
+      userId: fact.userId,
+      omiFactId: fact.omiFactId ?? null,
+      category: fact.category ?? null,
+      content: fact.content,
+      lastUsed: null,
+      useCount: 0,
+      createdAt: new Date(),
+    };
+    this.userFacts.set(id, newFact);
+    return newFact;
+  }
+
+  async getUserFacts(userId: string): Promise<UserFact[]> {
+    return Array.from(this.userFacts.values())
+      .filter(f => f.userId === userId)
+      .sort((a, b) => (a.useCount || 0) - (b.useCount || 0)); // Least used first
+  }
+
+  async getRandomUserFact(userId: string): Promise<UserFact | undefined> {
+    const facts = await this.getUserFacts(userId);
+    if (facts.length === 0) return undefined;
+    // Weighted random: prefer less-used facts
+    const leastUsed = facts.slice(0, Math.max(3, Math.ceil(facts.length / 2)));
+    return leastUsed[Math.floor(Math.random() * leastUsed.length)];
+  }
+
+  async updateUserFactUsage(id: number): Promise<UserFact | undefined> {
+    const fact = this.userFacts.get(id);
+    if (!fact) return undefined;
+    const updated = { 
+      ...fact, 
+      lastUsed: new Date(),
+      useCount: (fact.useCount || 0) + 1
+    };
+    this.userFacts.set(id, updated);
+    return updated;
   }
 }
 

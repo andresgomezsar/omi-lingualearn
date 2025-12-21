@@ -9,7 +9,17 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { DailyChallenge } from "@shared/schema";
 
-const mockChallenges = [
+interface ChallengeDisplay {
+  id: number;
+  originalText: string;
+  correctedText: string;
+  explanation: string;
+  category: string;
+  xpEarned: number;
+  completed: boolean;
+}
+
+const mockChallenges: ChallengeDisplay[] = [
   {
     id: 1,
     originalText: "I go to school yesterday",
@@ -57,6 +67,18 @@ const mockChallenges = [
   },
 ];
 
+function convertChallenge(challenge: DailyChallenge): ChallengeDisplay {
+  return {
+    id: challenge.id,
+    originalText: "Practice the following phrase",
+    correctedText: challenge.challengeText,
+    explanation: "Complete this challenge to earn XP!",
+    category: "grammar",
+    xpEarned: challenge.xpEarned || 25,
+    completed: challenge.completed || false,
+  };
+}
+
 export default function Challenges() {
   const { toast } = useToast();
 
@@ -78,7 +100,9 @@ export default function Challenges() {
     },
   });
 
-  const displayChallenges = challenges || mockChallenges;
+  const displayChallenges: ChallengeDisplay[] = challenges 
+    ? challenges.map(convertChallenge) 
+    : mockChallenges;
   const pendingChallenges = displayChallenges.filter(c => !c.completed);
   const completedChallenges = displayChallenges.filter(c => c.completed);
 

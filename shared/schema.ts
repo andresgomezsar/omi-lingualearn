@@ -128,6 +128,49 @@ export const compiledAudioFiles = pgTable("compiled_audio_files", {
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
 });
 
+// Voice Coach Challenges - personalized language practice prompts
+export const voiceChallenges = pgTable("voice_challenges", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(),
+  status: text("status").default("pending"), // pending, active, completed, expired
+  // Source fact from Omi
+  sourceFact: text("source_fact"),
+  sourceFactId: varchar("source_fact_id"),
+  // Generated prompt
+  prompt: text("prompt").notNull(),
+  languageGoal: text("language_goal"), // e.g., "past tense conjugation", "subjunctive mood"
+  targetLanguage: text("target_language").default("Spanish"),
+  difficulty: text("difficulty").default("intermediate"),
+  // User response
+  responseTranscript: text("response_transcript"),
+  responseAudioUri: text("response_audio_uri"),
+  respondedAt: timestamp("responded_at"),
+  // Gemini feedback
+  feedbackJson: text("feedback_json"), // Full analysis from Gemini
+  grammarScore: integer("grammar_score"),
+  vocabularyScore: integer("vocabulary_score"),
+  pronunciationScore: integer("pronunciation_score"),
+  overallScore: integer("overall_score"),
+  corrections: text("corrections"), // JSON array of corrections
+  // Rewards
+  xpEarned: integer("xp_earned").default(0),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+  completedAt: timestamp("completed_at"),
+  expiresAt: timestamp("expires_at"),
+});
+
+// User facts from Omi (cached)
+export const userFacts = pgTable("user_facts", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(),
+  omiFactId: varchar("omi_fact_id"),
+  category: text("category"), // preference, memory, habit, etc.
+  content: text("content").notNull(),
+  lastUsed: timestamp("last_used"),
+  useCount: integer("use_count").default(0),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+});
+
 // Generated lessons from audio analysis
 export const lessons = pgTable("lessons", {
   id: serial("id").primaryKey(),
@@ -197,6 +240,17 @@ export const insertCompiledAudioFileSchema = createInsertSchema(compiledAudioFil
   createdAt: true,
 });
 
+export const insertVoiceChallengeSchema = createInsertSchema(voiceChallenges).omit({
+  id: true,
+  createdAt: true,
+  completedAt: true,
+});
+
+export const insertUserFactSchema = createInsertSchema(userFacts).omit({
+  id: true,
+  createdAt: true,
+});
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type LearningItem = typeof learningItems.$inferSelect;
@@ -217,3 +271,7 @@ export type Lesson = typeof lessons.$inferSelect;
 export type InsertLesson = z.infer<typeof insertLessonSchema>;
 export type CompiledAudioFile = typeof compiledAudioFiles.$inferSelect;
 export type InsertCompiledAudioFile = z.infer<typeof insertCompiledAudioFileSchema>;
+export type VoiceChallenge = typeof voiceChallenges.$inferSelect;
+export type InsertVoiceChallenge = z.infer<typeof insertVoiceChallengeSchema>;
+export type UserFact = typeof userFacts.$inferSelect;
+export type InsertUserFact = z.infer<typeof insertUserFactSchema>;

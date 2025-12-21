@@ -1,19 +1,21 @@
-# LinguaFlow - Passive Language Learning with Omi AI
+# LinguaFlow - Active Language Learning with Omi AI
 
 ## Overview
-LinguaFlow is a language learning application that integrates with the Omi AI necklace to analyze real conversations. It uses Gemini AI to identify grammar and vocabulary mistakes from user speech, generates personalized daily challenges, and employs SM-2 spaced repetition for optimal learning.
+LinguaFlow is a language learning application that integrates with the Omi AI necklace for active speaking practice. Users trigger personalized speaking challenges by saying "lingua learn", receive prompts based on their memories/facts, speak monologue responses, and get instant Gemini AI feedback on grammar, vocabulary, and pronunciation with XP rewards.
 
 ## Current State
 The application is fully functional with:
 - Beautiful landing page with feature showcase
-- Dashboard with streak tracking, XP progress, and daily challenges
-- Challenge system with grammar/vocabulary correction cards
+- Dashboard with streak tracking, XP progress, and Voice Coach challenges
+- **Voice Coach Challenge System**: Triggered by saying "lingua learn"
+- Personalized prompts generated from user facts/memories
+- Real-time Gemini AI feedback with grammar/vocabulary/pronunciation scores
 - Learning items queue with spaced repetition scheduling
 - Progress tracking with weekly activity charts
 - Achievement system for gamification
 - Settings page with Omi device setup and language preferences
 - Dark/light theme support
-- **Full Omi Integration** with webhooks and chat tools
+- **Full Omi Integration** with webhooks, trigger phrase detection, and auto-response analysis
 
 ## Tech Stack
 - **Frontend**: React, TypeScript, TailwindCSS, Framer Motion, Shadcn UI
@@ -67,6 +69,41 @@ shared/
 2. **get_learning_status** - Get user's streak, XP, level, and progress
 3. **add_to_learning_queue** - Add phrases to spaced repetition queue
 4. **get_daily_challenges** - Get today's practice challenges
+
+## Voice Coach Challenge System (NEW)
+
+### How It Works
+1. User says trigger phrase: "lingua learn", "voice coach", or "start challenge"
+2. System generates personalized speaking prompt from user facts/memories
+3. Prompt includes specific language goal (past tense, subjunctive, vocabulary, etc.)
+4. User speaks their response naturally
+5. When conversation ends (memory event), Gemini analyzes the response
+6. User receives detailed feedback: grammar/vocabulary/pronunciation scores, corrections, suggestions
+7. XP awarded based on overall performance
+
+### Trigger Phrases
+- "lingua learn"
+- "lingualearn"
+- "voice coach"
+- "lingua challenge"
+- "start challenge"
+
+### Challenge Lifecycle
+```
+User says "lingua learn" → Challenge Generated (active) →
+User speaks response → Memory Event triggers auto-submit →
+Gemini analyzes response → Challenge Completed with feedback + XP
+```
+
+### Voice Challenge API Endpoints
+- `POST /api/voice-challenges/generate` - Generate new personalized challenge
+- `GET /api/voice-challenges/active` - Get active challenge for user
+- `POST /api/voice-challenges/:id/respond` - Submit response and get feedback
+- `GET /api/voice-challenges/history` - Get completed challenges
+
+### Database Tables
+- `voice_challenges` - Stores challenge prompts, responses, feedback, scores, XP
+- `user_facts` - Stores user memories/facts for personalized prompts
 
 ### Setup Flow
 1. User opens Settings page in LinguaFlow

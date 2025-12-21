@@ -1,25 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { 
-  Target, 
   TrendingUp, 
   Zap, 
   Calendar,
-  ArrowRight,
   Sparkles,
   BookOpen,
-  Mic
 } from "lucide-react";
-import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import { ProgressRing } from "@/components/progress-ring";
 import { StatsCard } from "@/components/stats-card";
-import { ChallengeCard } from "@/components/challenge-card";
+import { VoiceChallengeCard } from "@/components/voice-challenge-card";
 import { WeeklyHeatmap } from "@/components/weekly-heatmap";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { DailyChallenge, LearningItem } from "@shared/schema";
 
 export default function Home() {
   const { data: stats, isLoading: statsLoading } = useQuery<{
@@ -30,10 +23,6 @@ export default function Home() {
     streak: number;
   }>({
     queryKey: ["/api/stats/overview"],
-  });
-
-  const { data: challenges, isLoading: challengesLoading } = useQuery<DailyChallenge[]>({
-    queryKey: ["/api/challenges/today"],
   });
 
   const { data: heatmapData } = useQuery<{ date: string; count: number }[]>({
@@ -143,54 +132,7 @@ export default function Home() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.3 }}
         >
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between gap-4">
-              <div className="flex items-center gap-2">
-                <Target className="h-5 w-5 text-primary" />
-                <CardTitle className="font-display">Today's Challenges</CardTitle>
-              </div>
-              <Button variant="ghost" size="sm" asChild>
-                <Link href="/challenges">
-                  View all
-                  <ArrowRight className="h-4 w-4 ml-1" />
-                </Link>
-              </Button>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {challengesLoading ? (
-                <div className="space-y-4">
-                  {[1, 2].map((i) => (
-                    <Skeleton key={i} className="h-48 w-full rounded-lg" />
-                  ))}
-                </div>
-              ) : challenges && challenges.length > 0 ? (
-                challenges.slice(0, 2).map((challenge) => (
-                  <ChallengeCard
-                    key={challenge.id}
-                    id={challenge.id}
-                    originalText="I go to school yesterday"
-                    correctedText="I went to school yesterday"
-                    explanation="Use past tense 'went' instead of present tense 'go' when talking about past events."
-                    category="grammar"
-                    xpReward={challenge.xpEarned || 25}
-                    completed={challenge.completed || false}
-                  />
-                ))
-              ) : (
-                <div className="text-center py-12">
-                  <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-primary/10 flex items-center justify-center">
-                    <Mic className="h-8 w-8 text-primary" />
-                  </div>
-                  <h3 className="text-lg font-semibold font-display text-foreground mb-2">
-                    No challenges yet
-                  </h3>
-                  <p className="text-muted-foreground max-w-sm mx-auto">
-                    Start speaking with your Omi necklace to generate personalized language challenges!
-                  </p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          <VoiceChallengeCard />
         </motion.div>
 
         <motion.div

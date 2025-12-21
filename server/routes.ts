@@ -789,15 +789,84 @@ export async function registerRoutes(
         case "transcript": {
           // Handle real-time transcript
           const segments = req.body;
+          const userId = uid || DEFAULT_USER_ID;
           console.log(`Processing transcript: ${Array.isArray(segments) ? segments.length : 0} segments`);
 
           if (Array.isArray(segments) && segments.length > 0) {
             const userSegments = segments.filter((seg: { is_user?: boolean }) => seg.is_user === true);
             
+            // Combine all user text to check for trigger phrases
+            const fullUserText = userSegments.map((seg: { text: string }) => seg.text).join(' ').toLowerCase();
+            
+            // Trigger phrase detection for Voice Coach Challenge
+            const triggerPhrases = ['lingua learn', 'lingualearn', 'voice coach', 'lingua challenge', 'start challenge'];
+            const hasTriggerPhrase = triggerPhrases.some(phrase => fullUserText.includes(phrase));
+            
+            if (hasTriggerPhrase) {
+              console.log(`Trigger phrase detected for user ${userId}: "${fullUserText.slice(0, 50)}..."`);
+              
+              // Check if there's already an active challenge
+              const activeChallenge = await storage.getActiveVoiceChallenge(userId);
+              
+              if (!activeChallenge) {
+                // Generate a new challenge
+                try {
+                  const { generateChallengePrompt } = await import("./gemini-challenge");
+                  
+                  // Get a random user fact
+                  let userFact = await storage.getRandomUserFact(userId);
+                  if (!userFact) {
+                    // Create default facts if none exist
+                    await storage.createUserFact({
+                      userId,
+                      content: "User enjoys daily conversations and wants to improve language skills",
+                      category: "goal",
+                    });
+                    userFact = await storage.getRandomUserFact(userId);
+                  }
+                  
+                  if (userFact) {
+                    const generated = await generateChallengePrompt(userFact, "Spanish");
+                    
+                    const challenge = await storage.createVoiceChallenge({
+                      userId,
+                      status: "active",
+                      sourceFact: userFact.content,
+                      sourceFactId: userFact.id.toString(),
+                      prompt: generated.prompt,
+                      languageGoal: generated.languageGoal,
+                      targetLanguage: "Spanish",
+                      difficulty: generated.difficulty,
+                      xpEarned: 0,
+                      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+                    });
+                    
+                    console.log(`Generated new voice challenge ${challenge.id} for user ${userId}: "${generated.prompt.slice(0, 80)}..."`);
+                  }
+                } catch (error) {
+                  console.error("Error generating challenge from trigger:", error);
+                }
+              } else {
+                console.log(`User ${userId} already has active challenge ${activeChallenge.id}`);
+              }
+            } else {
+              // Check if user has an active challenge and this might be their response
+              const activeChallenge = await storage.getActiveVoiceChallenge(userId);
+              
+              if (activeChallenge && fullUserText.length > 30) {
+                // This looks like a challenge response - submit it!
+                console.log(`Detected potential challenge response for challenge ${activeChallenge.id}`);
+                
+                // Don't auto-submit from transcript - let the memory event handle full responses
+                // This avoids analyzing incomplete sentences
+              }
+            }
+            
+            // Store segments
             for (const segment of userSegments) {
               await storage.createTranscriptSegment({
                 sessionId: session_id || `session-${Date.now()}`,
-                userId: uid || DEFAULT_USER_ID,
+                userId,
                 text: segment.text,
                 speaker: segment.speaker,
                 speakerId: segment.speaker_id,
@@ -807,23 +876,25 @@ export async function registerRoutes(
               });
             }
 
-            // Analyze user segments for language learning
-            for (const segment of userSegments) {
-              if (segment.text && segment.text.length > 15) {
-                try {
-                  const analysis = await analyzeTextWithGemini(segment.text);
-                  if (analysis.hasIssues && analysis.original && analysis.corrected) {
-                    await storage.createLearningItem({
-                      userId: uid || DEFAULT_USER_ID,
-                      sessionId: session_id,
-                      originalText: analysis.original,
-                      correctedText: analysis.corrected,
-                      explanation: analysis.explanation || "Language correction",
-                      category: analysis.category || "grammar",
-                    });
+            // Standard language analysis for learning items (only if not a challenge response)
+            if (!hasTriggerPhrase) {
+              for (const segment of userSegments) {
+                if (segment.text && segment.text.length > 15) {
+                  try {
+                    const analysis = await analyzeTextWithGemini(segment.text);
+                    if (analysis.hasIssues && analysis.original && analysis.corrected) {
+                      await storage.createLearningItem({
+                        userId,
+                        sessionId: session_id,
+                        originalText: analysis.original,
+                        correctedText: analysis.corrected,
+                        explanation: analysis.explanation || "Language correction",
+                        category: analysis.category || "grammar",
+                      });
+                    }
+                  } catch (analysisError) {
+                    console.error("Error analyzing segment:", analysisError);
                   }
-                } catch (analysisError) {
-                  console.error("Error analyzing segment:", analysisError);
                 }
               }
             }
@@ -935,6 +1006,50 @@ export async function registerRoutes(
           const userId = uid || DEFAULT_USER_ID;
           
           if (Array.isArray(segments) && segments.length > 0) {
+            // Check for active voice challenge first
+            const activeChallenge = await storage.getActiveVoiceChallenge(userId);
+            
+            if (activeChallenge) {
+              // Collect user's speech as challenge response
+              // Note: Omi memory events may not always have is_user field set,
+              // so we take all segments if is_user is not defined
+              const userSpeech = segments
+                .filter((seg: { is_user?: boolean }) => seg.is_user === true || seg.is_user === undefined)
+                .map((seg: { text: string }) => seg.text)
+                .join(' ');
+              
+              if (userSpeech.length > 30) {
+                console.log(`Auto-submitting challenge response for challenge ${activeChallenge.id}: "${userSpeech.slice(0, 100)}..."`);
+                
+                try {
+                  const { analyzeChallengeResponse } = await import("./gemini-challenge");
+                  const feedback = await analyzeChallengeResponse(activeChallenge, userSpeech);
+                  
+                  // Update challenge with response and feedback
+                  const updatedChallenge = await storage.updateVoiceChallenge(activeChallenge.id, {
+                    responseTranscript: userSpeech,
+                    respondedAt: new Date(),
+                    feedbackJson: JSON.stringify(feedback),
+                    grammarScore: feedback.grammarScore,
+                    vocabularyScore: feedback.vocabularyScore,
+                    pronunciationScore: feedback.pronunciationScore,
+                    overallScore: feedback.overallScore,
+                    corrections: JSON.stringify(feedback.corrections),
+                    xpEarned: Math.round(feedback.overallScore * 1.5),
+                    status: 'completed',
+                    completedAt: new Date()
+                  });
+                  
+                  console.log(`Challenge ${activeChallenge.id} completed with score ${feedback.overallScore}, XP earned: ${updatedChallenge.xpEarned}`);
+                  
+                  // Skip normal analysis for this memory since it was a challenge response
+                  return res.json({ status: "ok", challenge_completed: true, xp_earned: updatedChallenge.xpEarned });
+                } catch (error) {
+                  console.error("Error processing challenge response:", error);
+                }
+              }
+            }
+            
             // Check if any segment has a real speaker name (not "Speaker 1" etc.)
             const segmentsWithRealNames = segments.filter((seg: { speaker?: string }) => 
               isRealSpeakerName(seg.speaker)
@@ -1216,6 +1331,233 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error analyzing text:", error);
       res.status(500).json({ error: "Failed to analyze text" });
+    }
+  });
+
+  // ============================================
+  // VOICE CHALLENGE ENDPOINTS
+  // ============================================
+
+  // Get active voice challenge for current user
+  app.get("/api/voice-challenges/active", async (req: Request, res: Response) => {
+    try {
+      const challenge = await storage.getActiveVoiceChallenge(DEFAULT_USER_ID);
+      res.json(challenge || null);
+    } catch (error) {
+      console.error("Error fetching active challenge:", error);
+      res.status(500).json({ error: "Failed to fetch active challenge" });
+    }
+  });
+
+  // Get all voice challenges for current user
+  app.get("/api/voice-challenges", async (req: Request, res: Response) => {
+    try {
+      const challenges = await storage.getVoiceChallenges(DEFAULT_USER_ID);
+      res.json(challenges);
+    } catch (error) {
+      console.error("Error fetching challenges:", error);
+      res.status(500).json({ error: "Failed to fetch challenges" });
+    }
+  });
+
+  // Get a specific voice challenge
+  app.get("/api/voice-challenges/:id", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      const challenge = await storage.getVoiceChallenge(id);
+      if (!challenge) {
+        return res.status(404).json({ error: "Challenge not found" });
+      }
+      res.json(challenge);
+    } catch (error) {
+      console.error("Error fetching challenge:", error);
+      res.status(500).json({ error: "Failed to fetch challenge" });
+    }
+  });
+
+  // Generate a new voice challenge
+  app.post("/api/voice-challenges/generate", async (req: Request, res: Response) => {
+    try {
+      const { generateChallengePrompt } = await import("./gemini-challenge");
+      
+      // Get a random user fact (or use provided one)
+      let userFact = await storage.getRandomUserFact(DEFAULT_USER_ID);
+      
+      // If no facts exist, create some demo ones
+      if (!userFact) {
+        const demoFacts = [
+          { content: "User loves traveling and has visited Japan twice", category: "preference" },
+          { content: "User enjoys cooking Italian food on weekends", category: "hobby" },
+          { content: "User is learning to play guitar", category: "skill" },
+          { content: "User works in software development", category: "work" },
+          { content: "User has a golden retriever named Max", category: "personal" },
+        ];
+        
+        for (const fact of demoFacts) {
+          await storage.createUserFact({
+            userId: DEFAULT_USER_ID,
+            content: fact.content,
+            category: fact.category,
+          });
+        }
+        userFact = await storage.getRandomUserFact(DEFAULT_USER_ID);
+      }
+
+      if (!userFact) {
+        return res.status(500).json({ error: "Failed to get user fact" });
+      }
+
+      // Generate challenge prompt using Gemini
+      const targetLanguage = req.body.targetLanguage || "Spanish";
+      const generated = await generateChallengePrompt(userFact, targetLanguage);
+
+      // Create the challenge
+      const challenge = await storage.createVoiceChallenge({
+        userId: DEFAULT_USER_ID,
+        status: "active",
+        sourceFact: userFact.content,
+        sourceFactId: userFact.id.toString(),
+        prompt: generated.prompt,
+        languageGoal: generated.languageGoal,
+        targetLanguage,
+        difficulty: generated.difficulty,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
+      });
+
+      // Update fact usage
+      await storage.updateUserFactUsage(userFact.id);
+
+      res.json(challenge);
+    } catch (error) {
+      console.error("Error generating challenge:", error);
+      res.status(500).json({ error: "Failed to generate challenge" });
+    }
+  });
+
+  // Submit response to a voice challenge
+  app.post("/api/voice-challenges/:id/respond", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { transcript, audioUri } = req.body;
+
+      if (!transcript) {
+        return res.status(400).json({ error: "Transcript is required" });
+      }
+
+      const challenge = await storage.getVoiceChallenge(id);
+      if (!challenge) {
+        return res.status(404).json({ error: "Challenge not found" });
+      }
+
+      // Analyze the response with Gemini
+      const { analyzeChallengeResponse } = await import("./gemini-challenge");
+      const feedback = await analyzeChallengeResponse(challenge, transcript, audioUri);
+
+      // Complete the challenge
+      const completed = await storage.completeVoiceChallenge(id, {
+        transcript,
+        audioUri,
+        feedback,
+      });
+
+      // Create learning items from corrections
+      if (feedback.corrections && feedback.corrections.length > 0) {
+        for (const correction of feedback.corrections) {
+          await storage.createLearningItem({
+            userId: DEFAULT_USER_ID,
+            originalText: correction.original,
+            correctedText: correction.corrected,
+            explanation: correction.explanation,
+            category: correction.category,
+          });
+        }
+      }
+
+      // Update user XP
+      if (completed?.xpEarned) {
+        const user = await storage.getUser(DEFAULT_USER_ID);
+        if (user) {
+          await storage.updateUserStats(DEFAULT_USER_ID, {
+            totalXp: (user.totalXp || 0) + completed.xpEarned,
+          });
+        }
+      }
+
+      res.json({
+        challenge: completed,
+        feedback,
+      });
+    } catch (error) {
+      console.error("Error submitting response:", error);
+      res.status(500).json({ error: "Failed to submit response" });
+    }
+  });
+
+  // ============================================
+  // USER FACTS ENDPOINTS
+  // ============================================
+
+  // Get all user facts
+  app.get("/api/user-facts", async (req: Request, res: Response) => {
+    try {
+      const facts = await storage.getUserFacts(DEFAULT_USER_ID);
+      res.json(facts);
+    } catch (error) {
+      console.error("Error fetching user facts:", error);
+      res.status(500).json({ error: "Failed to fetch user facts" });
+    }
+  });
+
+  // Add a user fact manually
+  app.post("/api/user-facts", async (req: Request, res: Response) => {
+    try {
+      const { content, category } = req.body;
+      if (!content) {
+        return res.status(400).json({ error: "Content is required" });
+      }
+
+      const fact = await storage.createUserFact({
+        userId: DEFAULT_USER_ID,
+        content,
+        category: category || "general",
+      });
+
+      res.status(201).json(fact);
+    } catch (error) {
+      console.error("Error creating user fact:", error);
+      res.status(500).json({ error: "Failed to create user fact" });
+    }
+  });
+
+  // Sync facts from Omi API (placeholder - requires Omi API key)
+  app.post("/api/user-facts/sync-omi", async (req: Request, res: Response) => {
+    try {
+      // For now, add some demo facts if none exist
+      const existingFacts = await storage.getUserFacts(DEFAULT_USER_ID);
+      
+      if (existingFacts.length === 0) {
+        const demoFacts = [
+          { content: "User enjoys traveling and has visited 5 countries", category: "hobby" },
+          { content: "User prefers coffee over tea, especially espresso", category: "preference" },
+          { content: "User is interested in learning new languages", category: "interest" },
+          { content: "User works from home as a software developer", category: "work" },
+          { content: "User loves watching documentary films", category: "entertainment" },
+        ];
+
+        for (const fact of demoFacts) {
+          await storage.createUserFact({
+            userId: DEFAULT_USER_ID,
+            content: fact.content,
+            category: fact.category,
+          });
+        }
+      }
+
+      const facts = await storage.getUserFacts(DEFAULT_USER_ID);
+      res.json({ synced: facts.length, facts });
+    } catch (error) {
+      console.error("Error syncing facts from Omi:", error);
+      res.status(500).json({ error: "Failed to sync facts" });
     }
   });
 
