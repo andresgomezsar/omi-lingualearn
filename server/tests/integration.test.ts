@@ -122,34 +122,25 @@ const testGeminiImport = test('Gemini: Module import', async () => {
 });
 
 const testGeminiConfiguration = test('Gemini: Configuration check', async () => {
-  const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
-  const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
-  console.log(`  API Key available: ${apiKey ? 'yes' : 'no'}`);
-  console.log(`  Base URL available: ${baseUrl ? 'yes' : 'no'}`);
-  console.log(`  Using Replit AI Integrations: ${!!(apiKey && baseUrl)}`);
+  const apiKey = process.env.GEMINI_API_KEY;
+  console.log(`  GEMINI_API_KEY available: ${apiKey ? 'yes' : 'no'}`);
+  console.log(`  Using direct Google Gemini API: ${!!apiKey}`);
 });
 
 const testGeminiBasicCall = test('Gemini: Basic text generation', async () => {
   const { GoogleGenAI } = await import('@google/genai');
   
-  const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
-  const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    console.log('  Skipping: No API key available (AI_INTEGRATIONS_GEMINI_API_KEY not set)');
+    console.log('  Skipping: No API key available (GEMINI_API_KEY not set)');
     return;
   }
   
-  const ai = new GoogleGenAI({ 
-    apiKey,
-    httpOptions: {
-      apiVersion: "",
-      baseUrl: baseUrl || undefined
-    }
-  });
+  const ai = new GoogleGenAI({ apiKey });
   
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
-    contents: [{ role: 'user', parts: [{ text: 'Say "Hello, test!" and nothing else.' }] }],
+    contents: 'Say "Hello, test!" and nothing else.',
   });
   
   const text = response.text || '';
@@ -160,20 +151,13 @@ const testGeminiBasicCall = test('Gemini: Basic text generation', async () => {
 const testGeminiGrammarAnalysis = test('Gemini: Grammar analysis', async () => {
   const { GoogleGenAI } = await import('@google/genai');
   
-  const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
-  const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     console.log('  Skipping: No API key available');
     return;
   }
   
-  const ai = new GoogleGenAI({ 
-    apiKey,
-    httpOptions: {
-      apiVersion: "",
-      baseUrl: baseUrl || undefined
-    }
-  });
+  const ai = new GoogleGenAI({ apiKey });
   
   const prompt = `Analyze this text for grammar errors and respond in JSON format:
 Text: "She go to the store yesterday and buyed some apples."
@@ -181,7 +165,7 @@ Respond with: {"issues": [{"original": "...", "corrected": "...", "explanation":
   
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    contents: prompt,
   });
   
   const text = response.text || '';

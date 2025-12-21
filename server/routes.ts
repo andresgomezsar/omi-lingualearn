@@ -4,12 +4,9 @@ import { storage } from "./storage";
 import { GoogleGenAI } from "@google/genai";
 import * as gcpStorage from "./gcp-storage";
 
+// Using direct Gemini API key from Google
 const ai = new GoogleGenAI({
-  apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
-  httpOptions: {
-    apiVersion: "",
-    baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
-  },
+  apiKey: process.env.GEMINI_API_KEY || "",
 });
 
 const DEFAULT_USER_ID = "demo-user";
