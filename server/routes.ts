@@ -656,34 +656,253 @@ export async function registerRoutes(
   });
 
   // ============================================
+  // UNIFIED OMI HUB ENDPOINT
+  // ============================================
+  // Single URL that handles all Omi callbacks via query parameter routing
+  // Use: /api/omi/hub?event=transcript|audio|memory|setup_complete
+
+  // GET handler for setup_complete check and app home
+  app.get("/api/omi/hub", async (req: Request, res: Response) => {
+    const event = req.query.event as string;
+    const uid = req.query.uid as string;
+
+    // Handle setup_complete check (returns is_setup_completed boolean)
+    if (event === "setup_complete") {
+      try {
+        if (uid) {
+          const connection = await storage.getOmiConnectionByUid(uid);
+          return res.json({ is_setup_completed: !!connection });
+        }
+        return res.json({ is_setup_completed: false });
+      } catch (error) {
+        console.error("Error checking setup status:", error);
+        return res.json({ is_setup_completed: false });
+      }
+    }
+
+    // Default: redirect to app home (dashboard)
+    const baseUrl = getBaseUrl(req);
+    res.redirect(`${baseUrl}/dashboard`);
+  });
+
+  // POST handler for webhooks and setup_complete notification
+  app.post("/api/omi/hub", async (req: Request, res: Response) => {
+    const event = req.query.event as string;
+    const uid = req.query.uid as string;
+    const session_id = req.query.session_id as string;
+
+    console.log(`Omi Hub received: event=${event}, uid=${uid}, session_id=${session_id}`);
+
+    try {
+      switch (event) {
+        case "transcript": {
+          // Handle real-time transcript
+          const segments = req.body;
+          console.log(`Processing transcript: ${Array.isArray(segments) ? segments.length : 0} segments`);
+
+          if (Array.isArray(segments) && segments.length > 0) {
+            const userSegments = segments.filter((seg: { is_user?: boolean }) => seg.is_user === true);
+            
+            for (const segment of userSegments) {
+              await storage.createTranscriptSegment({
+                sessionId: session_id || `session-${Date.now()}`,
+                userId: uid || DEFAULT_USER_ID,
+                text: segment.text,
+                speaker: segment.speaker,
+                speakerId: segment.speaker_id,
+                isUser: true,
+                startMs: segment.start,
+                endMs: segment.end,
+              });
+            }
+
+            // Analyze user segments for language learning
+            for (const segment of userSegments) {
+              if (segment.text && segment.text.length > 15) {
+                try {
+                  const analysis = await analyzeTextWithGemini(segment.text);
+                  if (analysis.hasIssues && analysis.original && analysis.corrected) {
+                    await storage.createLearningItem({
+                      userId: uid || DEFAULT_USER_ID,
+                      sessionId: session_id,
+                      originalText: analysis.original,
+                      correctedText: analysis.corrected,
+                      explanation: analysis.explanation || "Language correction",
+                      category: analysis.category || "grammar",
+                    });
+                  }
+                } catch (analysisError) {
+                  console.error("Error analyzing segment:", analysisError);
+                }
+              }
+            }
+          }
+          return res.json({ status: "ok" });
+        }
+
+        case "audio": {
+          // Handle audio bytes
+          const sampleRate = parseInt(req.query.sample_rate as string) || 16000;
+          const sessionId = session_id || `audio-${Date.now()}`;
+          
+          const chunks: Buffer[] = [];
+          req.on('data', (chunk: Buffer) => chunks.push(chunk));
+          req.on('end', async () => {
+            try {
+              const audioBuffer = Buffer.concat(chunks);
+              
+              if (audioBuffer.length === 0) {
+                return res.json({ status: "ok" });
+              }
+
+              if (!gcpStorage.isConfigured()) {
+                return res.json({ status: "ok", message: "GCP not configured" });
+              }
+
+              const existingChunks = await storage.getAudioChunks(sessionId);
+              const chunkIndex = existingChunks.length;
+              const timestamp = Date.now();
+              const samples = audioBuffer.length / 2;
+              const durationMs = Math.round((samples / sampleRate) * 1000);
+
+              const gcpUri = await gcpStorage.uploadAudioChunk(
+                uid || DEFAULT_USER_ID,
+                sessionId,
+                audioBuffer,
+                timestamp,
+                chunkIndex
+              );
+
+              await storage.createAudioChunk({
+                sessionId,
+                userId: uid || DEFAULT_USER_ID,
+                gcpUri,
+                startMs: chunkIndex > 0 ? existingChunks[chunkIndex - 1]?.endMs || 0 : 0,
+                endMs: (chunkIndex > 0 ? existingChunks[chunkIndex - 1]?.endMs || 0 : 0) + durationMs,
+                sampleRate,
+                durationMs,
+                chunkIndex,
+              });
+
+              res.json({ status: "ok" });
+            } catch (uploadError) {
+              console.error("Error uploading audio:", uploadError);
+              res.status(500).json({ status: "error" });
+            }
+          });
+          return;
+        }
+
+        case "memory": {
+          // Handle memory trigger (conversation end)
+          const memory = req.body;
+          const segments = memory?.transcript_segments;
+          
+          if (Array.isArray(segments) && segments.length > 0) {
+            const userText = segments
+              .filter((seg: { is_user?: boolean }) => seg.is_user === true)
+              .map((seg: { text: string }) => seg.text)
+              .join(' ');
+            
+            if (userText.length > 20) {
+              const analysis = await analyzeConversationWithGemini(userText);
+              
+              if (analysis.issues && analysis.issues.length > 0) {
+                for (const issue of analysis.issues) {
+                  await storage.createLearningItem({
+                    userId: uid || DEFAULT_USER_ID,
+                    sessionId: memory?.id,
+                    originalText: issue.original,
+                    correctedText: issue.corrected,
+                    explanation: issue.explanation,
+                    category: issue.category || "grammar",
+                  });
+                }
+              }
+            }
+          }
+          return res.json({ status: "ok" });
+        }
+
+        case "setup_complete": {
+          // Handle setup completion notification
+          const omiUid = uid || req.body?.uid;
+          if (!omiUid) {
+            return res.status(400).json({ status: "error", message: "Missing uid" });
+          }
+          
+          await storage.createOmiConnection({
+            omiUid,
+            userId: DEFAULT_USER_ID,
+            appId: req.body?.app_id,
+            status: "connected"
+          });
+          
+          return res.json({ status: "ok" });
+        }
+
+        default:
+          // Unknown event type
+          console.log(`Unknown hub event: ${event}`);
+          return res.json({ status: "ok", message: "Unknown event type" });
+      }
+    } catch (error) {
+      console.error(`Error processing hub event ${event}:`, error);
+      res.status(500).json({ status: "error" });
+    }
+  });
+
+  // ============================================
   // SETUP & STATUS ENDPOINTS
   // ============================================
 
   // Get Omi setup info for the settings page
   app.get("/api/omi/setup-info", (req: Request, res: Response) => {
     const baseUrl = getBaseUrl(req);
+    const hubUrl = `${baseUrl}/api/omi/hub`;
     
     res.json({
+      // Primary unified webhook URL - use this for all callbacks
+      hub_url: hubUrl,
+      
+      // Event-specific URLs (all route through the hub)
       webhooks: {
-        transcript: `${baseUrl}/api/omi/webhook/transcript`,
-        memory: `${baseUrl}/api/omi/webhook/memory`,
-        audio: `${baseUrl}/api/omi/webhook/audio`,
+        transcript: `${hubUrl}?event=transcript`,
+        audio: `${hubUrl}?event=audio`,
+        memory: `${hubUrl}?event=memory`,
       },
+      
+      // Configuration URLs
+      setup_complete_url: `${hubUrl}?event=setup_complete`,
+      app_home_url: hubUrl, // GET request redirects to /dashboard
+      auth_url: hubUrl, // Same as app_home for authentication
       manifest_url: `${baseUrl}/.well-known/omi-tools.json`,
-      setup_complete_url: `${baseUrl}/api/omi/setup-complete`,
-      app_home_url: `${baseUrl}/dashboard`,
+      
       gcp_configured: gcpStorage.isConfigured(),
+      
       instructions: [
         "1. Open the Omi app on your phone",
         "2. Go to Apps -> Create App (or Explore -> Create App)",
         "3. Select 'External Integration' capability",
-        "4. Enable 'Real-time Transcript' and paste the transcript webhook URL",
-        "5. Enable 'Audio Bytes' and paste the audio webhook URL (for pronunciation analysis)",
-        "6. (Optional) Enable 'Memory Trigger' and paste the memory webhook URL",
+        "4. Use the Hub URL as your single webhook URL:",
+        `   ${hubUrl}?event=transcript (for transcripts)`,
+        `   ${hubUrl}?event=audio (for audio bytes)`,
+        `   ${hubUrl}?event=memory (for memory trigger)`,
+        "5. For Setup Complete URL, use:",
+        `   ${hubUrl}?event=setup_complete`,
+        "6. For App Home URL, use the Hub URL directly:",
+        `   ${hubUrl}`,
         "7. Add the Chat Tools Manifest URL to enable AI tools",
-        "8. Set the Setup Complete URL",
-        "9. Save and install your app!"
-      ]
+        "8. Save and install your app!"
+      ],
+      
+      // Quick copy section for single-webhook limitation
+      single_url_mode: {
+        description: "If Omi only allows one webhook URL, use this single URL with different event parameters",
+        base_url: hubUrl,
+        events: ["transcript", "audio", "memory", "setup_complete"],
+        example: `${hubUrl}?event=transcript&uid=YOUR_USER_ID&session_id=SESSION_ID`
+      }
     });
   });
 

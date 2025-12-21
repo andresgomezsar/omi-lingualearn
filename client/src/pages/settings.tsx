@@ -29,6 +29,7 @@ import { useTheme } from "@/lib/theme-provider";
 import { useToast } from "@/hooks/use-toast";
 
 interface OmiSetupInfo {
+  hub_url: string;
   webhooks: {
     transcript: string;
     memory: string;
@@ -37,8 +38,15 @@ interface OmiSetupInfo {
   manifest_url: string;
   setup_complete_url: string;
   app_home_url: string;
+  auth_url: string;
   gcp_configured: boolean;
   instructions: string[];
+  single_url_mode: {
+    description: string;
+    base_url: string;
+    events: string[];
+    example: string;
+  };
 }
 
 interface GcpStatus {
@@ -163,60 +171,62 @@ export default function Settings() {
             <Separator />
 
             <div className="space-y-4">
-              <h4 className="font-medium text-sm text-foreground flex items-center gap-2">
-                <Zap className="h-4 w-4" />
-                Webhook URLs
-              </h4>
+              <div className="flex items-center gap-2">
+                <Zap className="h-4 w-4 text-primary" />
+                <h4 className="font-medium text-sm text-foreground">Unified Hub URL</h4>
+                <Badge variant="outline" className="text-xs">Recommended</Badge>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Use this single URL for all Omi integrations. Add <code className="bg-muted px-1 rounded">?event=</code> parameter to specify the type.
+              </p>
               
               <div className="space-y-2">
-                <Label htmlFor="transcript-webhook" className="text-xs text-muted-foreground">
-                  Real-time Transcript Webhook (required)
+                <Label htmlFor="hub-url" className="text-xs text-muted-foreground font-medium">
+                  Hub URL (use for Auth URL, App Home URL, Setup Complete URL)
                 </Label>
                 <div className="flex gap-2">
                   <Input 
-                    id="transcript-webhook"
-                    value={setupInfo?.webhooks.transcript || ""}
+                    id="hub-url"
+                    value={setupInfo?.hub_url || ""}
                     readOnly
-                    className="font-mono text-xs"
-                    data-testid="input-transcript-webhook"
+                    className="font-mono text-xs bg-primary/5 border-primary/20"
+                    data-testid="input-hub-url"
                   />
-                  <CopyButton text={setupInfo?.webhooks.transcript || ""} field="transcript" />
+                  <CopyButton text={setupInfo?.hub_url || ""} field="hub" />
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="audio-webhook" className="text-xs text-muted-foreground flex items-center gap-1">
-                  <Mic className="h-3 w-3" />
-                  Audio Bytes Webhook (for pronunciation analysis)
-                </Label>
-                <div className="flex gap-2">
-                  <Input 
-                    id="audio-webhook"
-                    value={setupInfo?.webhooks.audio || ""}
-                    readOnly
-                    className="font-mono text-xs"
-                    data-testid="input-audio-webhook"
-                  />
-                  <CopyButton text={setupInfo?.webhooks.audio || ""} field="audio" />
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Streams raw audio for pronunciation analysis via Gemini
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="memory-webhook" className="text-xs text-muted-foreground">
-                  Memory Trigger Webhook (optional)
-                </Label>
-                <div className="flex gap-2">
-                  <Input 
-                    id="memory-webhook"
-                    value={setupInfo?.webhooks.memory || ""}
-                    readOnly
-                    className="font-mono text-xs"
-                    data-testid="input-memory-webhook"
-                  />
-                  <CopyButton text={setupInfo?.webhooks.memory || ""} field="memory" />
+              <div className="bg-muted/30 p-3 rounded-lg space-y-2">
+                <p className="text-xs font-medium text-foreground">Event-specific URLs:</p>
+                <div className="grid gap-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-muted-foreground">Transcript:</span>
+                    <code className="bg-muted px-2 py-0.5 rounded text-foreground truncate max-w-[280px]">
+                      {setupInfo?.webhooks.transcript || ""}
+                    </code>
+                    <CopyButton text={setupInfo?.webhooks.transcript || ""} field="transcript" />
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-muted-foreground">Audio:</span>
+                    <code className="bg-muted px-2 py-0.5 rounded text-foreground truncate max-w-[280px]">
+                      {setupInfo?.webhooks.audio || ""}
+                    </code>
+                    <CopyButton text={setupInfo?.webhooks.audio || ""} field="audio" />
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-muted-foreground">Memory:</span>
+                    <code className="bg-muted px-2 py-0.5 rounded text-foreground truncate max-w-[280px]">
+                      {setupInfo?.webhooks.memory || ""}
+                    </code>
+                    <CopyButton text={setupInfo?.webhooks.memory || ""} field="memory" />
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-muted-foreground">Setup Complete:</span>
+                    <code className="bg-muted px-2 py-0.5 rounded text-foreground truncate max-w-[280px]">
+                      {setupInfo?.setup_complete_url || ""}
+                    </code>
+                    <CopyButton text={setupInfo?.setup_complete_url || ""} field="setup-complete" />
+                  </div>
                 </div>
               </div>
             </div>
@@ -228,7 +238,7 @@ export default function Settings() {
                 <Cloud className="h-4 w-4" />
                 GCP Storage Status
               </h4>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
                 {gcpStatus?.connected ? (
                   <Badge variant="default" className="bg-green-500">
                     <Check className="h-3 w-3 mr-1" /> Connected
@@ -252,11 +262,11 @@ export default function Settings() {
             <Separator />
 
             <div className="space-y-4">
-              <h4 className="font-medium text-sm text-foreground">App Configuration URLs</h4>
+              <h4 className="font-medium text-sm text-foreground">Chat Tools Manifest</h4>
               
               <div className="space-y-2">
                 <Label htmlFor="manifest-url" className="text-xs text-muted-foreground">
-                  Chat Tools Manifest URL
+                  Manifest URL (for AI chat tools)
                 </Label>
                 <div className="flex gap-2">
                   <Input 
@@ -271,38 +281,6 @@ export default function Settings() {
                 <p className="text-xs text-muted-foreground">
                   Enables AI chat tools: analyze speech, get learning status, add to queue
                 </p>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="setup-complete-url" className="text-xs text-muted-foreground">
-                  Setup Complete URL
-                </Label>
-                <div className="flex gap-2">
-                  <Input 
-                    id="setup-complete-url"
-                    value={setupInfo?.setup_complete_url || ""}
-                    readOnly
-                    className="font-mono text-xs"
-                    data-testid="input-setup-complete-url"
-                  />
-                  <CopyButton text={setupInfo?.setup_complete_url || ""} field="setup-complete" />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="app-home-url" className="text-xs text-muted-foreground">
-                  App Home URL
-                </Label>
-                <div className="flex gap-2">
-                  <Input 
-                    id="app-home-url"
-                    value={setupInfo?.app_home_url || ""}
-                    readOnly
-                    className="font-mono text-xs"
-                    data-testid="input-app-home-url"
-                  />
-                  <CopyButton text={setupInfo?.app_home_url || ""} field="app-home" />
-                </div>
               </div>
             </div>
 
