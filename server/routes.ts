@@ -1218,6 +1218,230 @@ export async function registerRoutes(
   });
 
   // ============================================
+  // AUTH & USER ENDPOINTS
+  // ============================================
+
+  // Login with Omi UID - creates user if doesn't exist, returns user data
+  app.post("/api/auth/login-omi", async (req: Request, res: Response) => {
+    try {
+      const { omiUid } = req.body;
+      if (!omiUid || typeof omiUid !== 'string' || omiUid.length < 5) {
+        return res.status(400).json({ error: "Valid Omi UID is required" });
+      }
+
+      // Check if user exists with this Omi UID
+      let user = await storage.getUserByOmiUid(omiUid);
+      
+      if (!user) {
+        // Create new user with this Omi UID
+        const newUser = await storage.createUser({
+          username: `omi_${omiUid.slice(0, 8)}`,
+          password: omiUid, // Use UID as password for simplicity
+        });
+        user = await storage.updateUserOmiUid(newUser.id, omiUid);
+      }
+
+      res.json({ 
+        success: true, 
+        user: {
+          id: user?.id,
+          username: user?.username,
+          omiUid: user?.omiUid,
+          nativeLanguage: user?.nativeLanguage,
+          targetLanguage: user?.targetLanguage,
+          streak: user?.streak,
+          totalXp: user?.totalXp,
+          level: user?.level,
+          demoDataEnabled: user?.demoDataEnabled
+        }
+      });
+    } catch (error) {
+      console.error("Error logging in with Omi UID:", error);
+      res.status(500).json({ error: "Failed to login" });
+    }
+  });
+
+  // Get current user profile
+  app.get("/api/user/profile", async (req: Request, res: Response) => {
+    try {
+      const userId = (req.query.userId as string) || DEFAULT_USER_ID;
+      const user = await storage.getUser(userId);
+      
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      res.json({
+        id: user.id,
+        username: user.username,
+        omiUid: user.omiUid,
+        nativeLanguage: user.nativeLanguage,
+        targetLanguage: user.targetLanguage,
+        streak: user.streak,
+        totalXp: user.totalXp,
+        level: user.level,
+        demoDataEnabled: user.demoDataEnabled
+      });
+    } catch (error) {
+      console.error("Error fetching user profile:", error);
+      res.status(500).json({ error: "Failed to fetch profile" });
+    }
+  });
+
+  // Update user preferences
+  app.patch("/api/user/preferences", async (req: Request, res: Response) => {
+    try {
+      const userId = (req.body.userId as string) || DEFAULT_USER_ID;
+      const { demoDataEnabled, nativeLanguage, targetLanguage } = req.body;
+      
+      const user = await storage.updateUserPreferences(userId, {
+        demoDataEnabled,
+        nativeLanguage,
+        targetLanguage
+      });
+
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      res.json({ success: true, user });
+    } catch (error) {
+      console.error("Error updating preferences:", error);
+      res.status(500).json({ error: "Failed to update preferences" });
+    }
+  });
+
+  // Reset all user data
+  app.post("/api/user/reset", async (req: Request, res: Response) => {
+    try {
+      const userId = (req.body.userId as string) || DEFAULT_USER_ID;
+      
+      await storage.resetUserData(userId);
+      
+      const user = await storage.getUser(userId);
+      res.json({ 
+        success: true, 
+        message: "All data has been reset",
+        user: user ? {
+          id: user.id,
+          streak: user.streak,
+          totalXp: user.totalXp,
+          level: user.level
+        } : null
+      });
+    } catch (error) {
+      console.error("Error resetting user data:", error);
+      res.status(500).json({ error: "Failed to reset data" });
+    }
+  });
+
+  // ============================================
+  // CHALLENGE CHAT ENDPOINTS
+  // ============================================
+
+  // Get chat messages
+  app.get("/api/chat/messages", async (req: Request, res: Response) => {
+    try {
+      const userId = (req.query.userId as string) || DEFAULT_USER_ID;
+      const challengeId = req.query.challengeId ? parseInt(req.query.challengeId as string) : undefined;
+      
+      const messages = await storage.getChatMessages(userId, challengeId);
+      res.json(messages);
+    } catch (error) {
+      console.error("Error fetching chat messages:", error);
+      res.status(500).json({ error: "Failed to fetch messages" });
+    }
+  });
+
+  // Send chat message and get Gemini response
+  app.post("/api/chat/send", async (req: Request, res: Response) => {
+    try {
+      const userId = (req.body.userId as string) || DEFAULT_USER_ID;
+      const { message, challengeId } = req.body;
+
+      if (!message || typeof message !== 'string') {
+        return res.status(400).json({ error: "Message is required" });
+      }
+
+      // Save user message
+      await storage.createChatMessage({
+        userId,
+        challengeId: challengeId || null,
+        role: "user",
+        content: message
+      });
+
+      // Get context: active challenge and recent transcripts
+      let contextPrompt = "";
+      const activeChallenge = await storage.getActiveVoiceChallenge(userId);
+      
+      if (activeChallenge) {
+        contextPrompt += `\n\nCurrent Voice Challenge:\nPrompt: "${activeChallenge.prompt}"\nLanguage Goal: ${activeChallenge.languageGoal || 'general practice'}\nTarget Language: ${activeChallenge.targetLanguage || 'Spanish'}\n`;
+        
+        if (activeChallenge.responseTranscript) {
+          contextPrompt += `User's Response: "${activeChallenge.responseTranscript}"\n`;
+        }
+        
+        if (activeChallenge.feedbackJson) {
+          try {
+            const feedback = JSON.parse(activeChallenge.feedbackJson);
+            contextPrompt += `Feedback Summary: ${feedback.summary || 'No summary available'}\n`;
+          } catch {}
+        }
+      }
+
+      // Call Gemini for response
+      const systemPrompt = `You are a helpful language learning assistant for LinguaFlow. 
+Help users understand their speaking challenges, explain grammar concepts, and provide tips for improvement.
+Be encouraging and supportive. Keep responses concise but informative.
+${contextPrompt}`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: [
+          { role: "user", parts: [{ text: systemPrompt + "\n\nUser: " + message }] }
+        ]
+      });
+
+      const assistantMessage = response.text || "I'm here to help with your language learning!";
+
+      // Save assistant response
+      const savedMessage = await storage.createChatMessage({
+        userId,
+        challengeId: challengeId || null,
+        role: "assistant",
+        content: assistantMessage,
+        contextJson: activeChallenge ? JSON.stringify({ challengeId: activeChallenge.id }) : null
+      });
+
+      res.json({ 
+        success: true, 
+        message: savedMessage,
+        activeChallenge: activeChallenge ? {
+          id: activeChallenge.id,
+          prompt: activeChallenge.prompt,
+          status: activeChallenge.status
+        } : null
+      });
+    } catch (error) {
+      console.error("Error sending chat message:", error);
+      res.status(500).json({ error: "Failed to send message" });
+    }
+  });
+
+  // Clear chat history
+  app.delete("/api/chat/clear", async (req: Request, res: Response) => {
+    try {
+      const userId = (req.query.userId as string) || DEFAULT_USER_ID;
+      await storage.clearChatMessages(userId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error clearing chat:", error);
+      res.status(500).json({ error: "Failed to clear chat" });
+    }
+  });
+
+  // ============================================
   // EXISTING APP ENDPOINTS
   // ============================================
 
@@ -1490,6 +1714,56 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error submitting response:", error);
       res.status(500).json({ error: "Failed to submit response" });
+    }
+  });
+
+  // Regenerate/skip a challenge and get a new one
+  app.post("/api/voice-challenges/:id/regenerate", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      
+      // Mark current challenge as skipped
+      const existingChallenge = await storage.getVoiceChallenge(id);
+      if (existingChallenge) {
+        await storage.updateVoiceChallenge(id, { status: "skipped" });
+      }
+
+      // Get a different fact (avoid the one just used)
+      const facts = await storage.getUserFacts(DEFAULT_USER_ID);
+      const availableFacts = facts.filter(f => 
+        !existingChallenge?.sourceFactId || f.id.toString() !== existingChallenge.sourceFactId
+      );
+
+      if (availableFacts.length === 0) {
+        return res.status(400).json({ error: "No alternative facts available" });
+      }
+
+      // Pick a random fact from available ones
+      const userFact = availableFacts[Math.floor(Math.random() * availableFacts.length)];
+
+      // Generate new challenge
+      const { generateChallengePrompt } = await import("./gemini-challenge");
+      const targetLanguage = req.body.targetLanguage || "Spanish";
+      const generated = await generateChallengePrompt(userFact, targetLanguage);
+
+      const challenge = await storage.createVoiceChallenge({
+        userId: DEFAULT_USER_ID,
+        status: "active",
+        sourceFact: userFact.content,
+        sourceFactId: userFact.id.toString(),
+        prompt: generated.prompt,
+        languageGoal: generated.languageGoal,
+        targetLanguage,
+        difficulty: generated.difficulty,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      });
+
+      await storage.updateUserFactUsage(userFact.id);
+
+      res.json(challenge);
+    } catch (error) {
+      console.error("Error regenerating challenge:", error);
+      res.status(500).json({ error: "Failed to regenerate challenge" });
     }
   });
 
