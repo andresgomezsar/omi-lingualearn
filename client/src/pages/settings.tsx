@@ -177,12 +177,12 @@ export default function Settings() {
                 <Badge variant="outline" className="text-xs">Recommended</Badge>
               </div>
               <p className="text-xs text-muted-foreground">
-                Use this single URL for all Omi integrations. Add <code className="bg-muted px-1 rounded">?event=</code> parameter to specify the type.
+                Use this single URL for ALL Omi webhook fields. The hub automatically detects whether Omi is sending transcripts, audio, memory, or setup callbacks.
               </p>
               
               <div className="space-y-2">
                 <Label htmlFor="hub-url" className="text-xs text-muted-foreground font-medium">
-                  Hub URL (use for Auth URL, App Home URL, Setup Complete URL)
+                  Hub URL (use for ALL fields: Webhooks, Auth, App Home, Setup Complete)
                 </Label>
                 <div className="flex gap-2">
                   <Input 

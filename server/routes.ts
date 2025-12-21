@@ -686,10 +686,39 @@ export async function registerRoutes(
   });
 
   // POST handler for webhooks and setup_complete notification
+  // Auto-detects event type from payload if not specified in query
   app.post("/api/omi/hub", async (req: Request, res: Response) => {
-    const event = req.query.event as string;
+    let event = req.query.event as string;
     const uid = req.query.uid as string;
     const session_id = req.query.session_id as string;
+    const contentType = req.headers['content-type'] || '';
+
+    // Auto-detect event type from payload structure if not specified
+    if (!event) {
+      const body = req.body;
+      
+      // Check content type for audio (binary data)
+      if (contentType.includes('octet-stream') || contentType.includes('audio')) {
+        event = 'audio';
+      }
+      // Check for memory structure (has transcript_segments and structured fields)
+      else if (body?.transcript_segments && (body?.structured || body?.id)) {
+        event = 'memory';
+      }
+      // Check for transcript array (array of segments with text/is_user fields)
+      else if (Array.isArray(body) && body.length > 0 && body[0]?.text !== undefined) {
+        event = 'transcript';
+      }
+      // Check for setup complete notification
+      else if (body?.app_id || (body?.uid && Object.keys(body).length <= 2)) {
+        event = 'setup_complete';
+      }
+      // Default fallback
+      else {
+        console.log('Could not auto-detect event type, payload:', JSON.stringify(body).slice(0, 200));
+        event = 'unknown';
+      }
+    }
 
     console.log(`Omi Hub received: event=${event}, uid=${uid}, session_id=${session_id}`);
 
@@ -841,10 +870,11 @@ export async function registerRoutes(
           return res.json({ status: "ok" });
         }
 
+        case "unknown":
         default:
-          // Unknown event type
-          console.log(`Unknown hub event: ${event}`);
-          return res.json({ status: "ok", message: "Unknown event type" });
+          // Unknown or undetected event type - still respond OK
+          console.log(`Unknown hub event: ${event}, body keys: ${Object.keys(req.body || {}).join(', ')}`);
+          return res.json({ status: "ok", message: "Event processed" });
       }
     } catch (error) {
       console.error(`Error processing hub event ${event}:`, error);
@@ -884,14 +914,10 @@ export async function registerRoutes(
         "1. Open the Omi app on your phone",
         "2. Go to Apps -> Create App (or Explore -> Create App)",
         "3. Select 'External Integration' capability",
-        "4. Use the Hub URL as your single webhook URL:",
-        `   ${hubUrl}?event=transcript (for transcripts)`,
-        `   ${hubUrl}?event=audio (for audio bytes)`,
-        `   ${hubUrl}?event=memory (for memory trigger)`,
-        "5. For Setup Complete URL, use:",
-        `   ${hubUrl}?event=setup_complete`,
-        "6. For App Home URL, use the Hub URL directly:",
+        "4. Use the Hub URL for ALL webhook fields:",
         `   ${hubUrl}`,
+        "5. The Hub auto-detects transcript, audio, memory, and setup events",
+        "6. For App Home URL and Auth URL, use the same Hub URL",
         "7. Add the Chat Tools Manifest URL to enable AI tools",
         "8. Save and install your app!"
       ],
