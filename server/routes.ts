@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { GoogleGenAI } from "@google/genai";
+import * as gcpStorage from "./gcp-storage";
 
 const ai = new GoogleGenAI({
   apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
@@ -257,6 +258,283 @@ export async function registerRoutes(
     }
   });
 
+  // Real-time Audio Bytes Webhook
+  // Omi sends: POST /endpoint?sample_rate=16000&uid=user123
+  // Body: Raw PCM16 audio bytes (application/octet-stream)
+  app.post("/api/omi/webhook/audio", async (req: Request, res: Response) => {
+    try {
+      const uid = req.query.uid as string;
+      const sampleRate = parseInt(req.query.sample_rate as string) || 16000;
+      const sessionId = req.query.session_id as string || `audio-${Date.now()}`;
+      
+      // Get raw audio buffer from request body
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', async () => {
+        try {
+          const audioBuffer = Buffer.concat(chunks);
+          
+          if (audioBuffer.length === 0) {
+            console.log(`Received empty audio chunk from UID: ${uid}`);
+            return res.json({ status: "ok" });
+          }
+
+          console.log(`Received audio bytes from Omi. UID: ${uid}, Session: ${sessionId}, Size: ${audioBuffer.length} bytes, Sample Rate: ${sampleRate}`);
+
+          // Check if GCP is configured
+          if (!gcpStorage.isConfigured()) {
+            console.log("GCP storage not configured, skipping audio upload");
+            return res.json({ status: "ok", message: "GCP not configured" });
+          }
+
+          // Get existing chunks for this session to determine index
+          const existingChunks = await storage.getAudioChunks(sessionId);
+          const chunkIndex = existingChunks.length;
+          const timestamp = Date.now();
+
+          // Calculate duration based on sample rate and buffer size
+          // PCM16 = 2 bytes per sample
+          const samples = audioBuffer.length / 2;
+          const durationMs = Math.round((samples / sampleRate) * 1000);
+
+          // Upload to GCP bucket
+          const gcpUri = await gcpStorage.uploadAudioChunk(
+            uid || DEFAULT_USER_ID,
+            sessionId,
+            audioBuffer,
+            timestamp,
+            chunkIndex
+          );
+
+          // Store chunk metadata
+          await storage.createAudioChunk({
+            sessionId,
+            userId: uid || DEFAULT_USER_ID,
+            gcpUri,
+            startMs: chunkIndex > 0 ? existingChunks[chunkIndex - 1]?.endMs || 0 : 0,
+            endMs: (chunkIndex > 0 ? existingChunks[chunkIndex - 1]?.endMs || 0 : 0) + durationMs,
+            sampleRate,
+            durationMs,
+            chunkIndex,
+          });
+
+          console.log(`Stored audio chunk ${chunkIndex} for session ${sessionId}: ${gcpUri}`);
+          res.json({ status: "ok" });
+        } catch (uploadError) {
+          console.error("Error uploading audio:", uploadError);
+          res.status(500).json({ status: "error" });
+        }
+      });
+    } catch (error) {
+      console.error("Error processing audio bytes:", error);
+      res.status(500).json({ status: "error" });
+    }
+  });
+
+  // Trigger audio compilation and analysis for a session
+  app.post("/api/omi/compile-session/:sessionId", async (req: Request, res: Response) => {
+    try {
+      const { sessionId } = req.params;
+      const uid = req.query.uid as string || DEFAULT_USER_ID;
+
+      // Get all audio chunks for this session
+      const chunks = await storage.getAudioChunks(sessionId);
+      if (chunks.length === 0) {
+        return res.status(404).json({ error: "No audio chunks found for session" });
+      }
+
+      // Get transcript segments for this session
+      const segments = await storage.getTranscriptSegments(sessionId);
+      const transcriptText = segments
+        .filter(s => s.isUser)
+        .map(s => s.text)
+        .join(' ');
+
+      console.log(`Compiling session ${sessionId}: ${chunks.length} audio chunks, ${segments.length} transcript segments`);
+
+      // Create audio analysis record
+      const analysis = await storage.createAudioAnalysis({
+        sessionId,
+        userId: uid,
+        transcriptText: transcriptText || null,
+        status: "processing",
+      });
+
+      let compiledAudioUri: string | null = null;
+      let analysisResult: any = null;
+      let overallScore: number | null = null;
+      let pronunciationScore: number | null = null;
+      let fluencyScore: number | null = null;
+      let accuracyScore: number | null = null;
+
+      // Compile audio if GCP is configured
+      if (gcpStorage.isConfigured() && chunks.length > 0) {
+        try {
+          // Download and concatenate all audio chunks
+          const audioBuffers: Buffer[] = [];
+          for (const chunk of chunks.sort((a, b) => (a.chunkIndex || 0) - (b.chunkIndex || 0))) {
+            const buffer = await gcpStorage.downloadAudioChunk(chunk.gcpUri);
+            audioBuffers.push(buffer);
+          }
+          
+          // Concatenate raw PCM audio
+          const compiledPcm = Buffer.concat(audioBuffers);
+          
+          // Upload compiled audio (as PCM for now - WAV header generation would require additional processing)
+          compiledAudioUri = await gcpStorage.uploadCompiledAudio(uid, sessionId, compiledPcm);
+          console.log(`Compiled audio uploaded: ${compiledAudioUri}`);
+
+          // Update analysis with compiled audio URI
+          await storage.updateAudioAnalysis(analysis.id, {
+            compiledAudioUri,
+          });
+        } catch (audioError) {
+          console.error("Error compiling audio:", audioError);
+          // Continue with text-based analysis even if audio compilation fails
+        }
+      }
+
+      // Perform text-based analysis with Gemini
+      if (transcriptText && transcriptText.length > 20) {
+        const geminiAnalysis = await analyzeConversationWithGemini(transcriptText);
+        analysisResult = geminiAnalysis;
+        
+        // Calculate scores based on analysis results
+        const issueCount = geminiAnalysis.issues?.length || 0;
+        const wordCount = transcriptText.split(/\s+/).length;
+        
+        // Score calculation: fewer issues = higher score
+        const issueRatio = Math.min(issueCount / Math.max(wordCount / 10, 1), 1);
+        overallScore = Math.round(100 - (issueRatio * 50));
+        fluencyScore = Math.round(90 - (issueCount * 5));
+        accuracyScore = overallScore;
+        
+        // Count pronunciation issues for pronunciation score
+        const pronunciationIssues = geminiAnalysis.issues?.filter((i: any) => i.category === "pronunciation").length || 0;
+        pronunciationScore = Math.round(100 - (pronunciationIssues * 15));
+        
+        // Generate lessons from issues found
+        for (const issue of geminiAnalysis.issues || []) {
+          await storage.createLearningItem({
+            userId: uid,
+            sessionId,
+            originalText: issue.original,
+            correctedText: issue.corrected,
+            explanation: issue.explanation,
+            category: issue.category || "grammar",
+          });
+
+          // Create a pronunciation lesson if applicable
+          if (issue.category === "pronunciation") {
+            await storage.createLesson({
+              userId: uid,
+              sessionId,
+              analysisId: analysis.id,
+              lessonType: "pronunciation",
+              title: `Pronunciation Practice: ${issue.corrected}`,
+              content: `Practice saying: "${issue.corrected}"\n\nYour version: "${issue.original}"\n\nTip: ${issue.explanation}`,
+              audioReferences: compiledAudioUri,
+              difficulty: "intermediate",
+              xpReward: 50,
+            });
+          }
+        }
+      }
+
+      // Always finalize the analysis record
+      await storage.updateAudioAnalysis(analysis.id, {
+        status: "completed",
+        analysisJson: analysisResult ? JSON.stringify(analysisResult) : null,
+        overallScore,
+        pronunciationScore,
+        fluencyScore,
+        accuracyScore,
+        completedAt: new Date(),
+      });
+
+      res.json({ 
+        status: "ok", 
+        analysisId: analysis.id,
+        chunksProcessed: chunks.length,
+        segmentsProcessed: segments.length,
+        compiledAudioUri,
+        scores: { overall: overallScore, pronunciation: pronunciationScore, fluency: fluencyScore, accuracy: accuracyScore }
+      });
+    } catch (error) {
+      console.error("Error compiling session:", error);
+      res.status(500).json({ error: "Failed to compile session" });
+    }
+  });
+
+  // Get audio analysis status
+  app.get("/api/audio-analysis/:sessionId", async (req: Request, res: Response) => {
+    try {
+      const { sessionId } = req.params;
+      const analysis = await storage.getAudioAnalysis(sessionId);
+      
+      if (!analysis) {
+        return res.status(404).json({ error: "Analysis not found" });
+      }
+
+      res.json(analysis);
+    } catch (error) {
+      console.error("Error fetching analysis:", error);
+      res.status(500).json({ error: "Failed to fetch analysis" });
+    }
+  });
+
+  // Get lessons for user
+  app.get("/api/lessons", async (req: Request, res: Response) => {
+    try {
+      const lessons = await storage.getLessons(DEFAULT_USER_ID);
+      res.json(lessons);
+    } catch (error) {
+      console.error("Error fetching lessons:", error);
+      res.status(500).json({ error: "Failed to fetch lessons" });
+    }
+  });
+
+  // Complete a lesson
+  app.patch("/api/lessons/:id/complete", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      const lesson = await storage.completeLesson(id);
+      
+      if (!lesson) {
+        return res.status(404).json({ error: "Lesson not found" });
+      }
+
+      // Award XP
+      const user = await storage.getUser(DEFAULT_USER_ID);
+      if (user) {
+        await storage.updateUserStats(DEFAULT_USER_ID, {
+          totalXp: (user.totalXp || 0) + (lesson.xpReward || 50),
+        });
+      }
+
+      res.json(lesson);
+    } catch (error) {
+      console.error("Error completing lesson:", error);
+      res.status(500).json({ error: "Failed to complete lesson" });
+    }
+  });
+
+  // Get GCP status
+  app.get("/api/gcp/status", async (req: Request, res: Response) => {
+    try {
+      const configured = gcpStorage.isConfigured();
+      let connected = false;
+      
+      if (configured) {
+        connected = await gcpStorage.testConnection();
+      }
+
+      res.json({ configured, connected });
+    } catch (error) {
+      res.json({ configured: false, connected: false, error: String(error) });
+    }
+  });
+
   // ============================================
   // OMI CHAT TOOLS (Called by Omi when user invokes tools)
   // Return format: { result: string } or { error: string }
@@ -389,19 +667,22 @@ export async function registerRoutes(
       webhooks: {
         transcript: `${baseUrl}/api/omi/webhook/transcript`,
         memory: `${baseUrl}/api/omi/webhook/memory`,
+        audio: `${baseUrl}/api/omi/webhook/audio`,
       },
       manifest_url: `${baseUrl}/.well-known/omi-tools.json`,
       setup_complete_url: `${baseUrl}/api/omi/setup-complete`,
       app_home_url: `${baseUrl}/dashboard`,
+      gcp_configured: gcpStorage.isConfigured(),
       instructions: [
         "1. Open the Omi app on your phone",
         "2. Go to Apps -> Create App (or Explore -> Create App)",
         "3. Select 'External Integration' capability",
         "4. Enable 'Real-time Transcript' and paste the transcript webhook URL",
-        "5. (Optional) Enable 'Memory Trigger' and paste the memory webhook URL",
-        "6. Add the Chat Tools Manifest URL to enable AI tools",
-        "7. Set the Setup Complete URL",
-        "8. Save and install your app!"
+        "5. Enable 'Audio Bytes' and paste the audio webhook URL (for pronunciation analysis)",
+        "6. (Optional) Enable 'Memory Trigger' and paste the memory webhook URL",
+        "7. Add the Chat Tools Manifest URL to enable AI tools",
+        "8. Set the Setup Complete URL",
+        "9. Save and install your app!"
       ]
     });
   });

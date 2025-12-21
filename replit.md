@@ -42,10 +42,23 @@ shared/
 ### Endpoints
 - `GET /.well-known/omi-tools.json` - Chat tools manifest for Omi App Store
 - `POST /api/omi/webhook/transcript` - Real-time transcript processing
+- `POST /api/omi/webhook/audio` - Audio bytes webhook for pronunciation analysis
 - `POST /api/omi/webhook/memory` - Memory trigger when conversation ends
+- `POST /api/omi/compile-session/:sessionId` - Compile audio and trigger Gemini analysis
 - `POST /api/omi/setup-complete` - Callback when user installs the app
 - `GET /api/omi/setup-info` - Returns all webhook URLs for setup
 - `GET /api/omi/status` - Check if Omi is connected
+- `GET /api/gcp/status` - Check GCP storage connection status
+
+### Audio Processing Pipeline
+1. Omi device sends audio bytes to `/api/omi/webhook/audio`
+2. Audio chunks uploaded to GCP bucket at `{userId}/{sessionId}/chunks/{timestamp}_{index}.pcm`
+3. Chunk metadata stored in audioChunks table
+4. On session end, `/api/omi/compile-session/:sessionId` is called
+5. All chunks downloaded, concatenated, and uploaded as compiled audio
+6. Gemini analyzes transcript for grammar/vocabulary/pronunciation issues
+7. Scores calculated dynamically based on analysis results
+8. Lessons and learning items generated from identified issues
 
 ### Chat Tools
 1. **analyze_speech** - Analyze text for grammar/vocabulary issues
@@ -72,6 +85,15 @@ shared/
 - `POST /api/learning-items` - Create learning item
 - `GET /api/achievements` - User achievements
 - `POST /api/analyze-text` - Analyze text with Gemini
+- `GET /api/lessons` - Get user's pronunciation lessons
+- `PATCH /api/lessons/:id/complete` - Complete a lesson and earn XP
+- `GET /api/audio-analysis/:sessionId` - Get audio analysis status and results
+
+## GCP Storage Integration
+- Requires `GCP_SERVICE_ACCOUNT_JSON` and `GCP_BUCKET_NAME` secrets
+- Audio stored at: `gs://{bucket}/{userId}/{sessionId}/chunks/{timestamp}_{index}.pcm`
+- Compiled audio stored at: `gs://{bucket}/{userId}/{sessionId}/compiled.wav`
+- Settings page shows GCP connection status
 
 ## Design System
 - Primary: Teal (#14B8A6)

@@ -13,7 +13,9 @@ import {
   Check,
   ExternalLink,
   Info,
-  Zap
+  Zap,
+  Cloud,
+  Mic
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -30,11 +32,18 @@ interface OmiSetupInfo {
   webhooks: {
     transcript: string;
     memory: string;
+    audio: string;
   };
   manifest_url: string;
   setup_complete_url: string;
   app_home_url: string;
+  gcp_configured: boolean;
   instructions: string[];
+}
+
+interface GcpStatus {
+  configured: boolean;
+  connected: boolean;
 }
 
 export default function Settings() {
@@ -53,6 +62,10 @@ export default function Settings() {
 
   const { data: omiStatus } = useQuery<{ connected: boolean }>({
     queryKey: ["/api/omi/status"],
+  });
+
+  const { data: gcpStatus } = useQuery<GcpStatus>({
+    queryKey: ["/api/gcp/status"],
   });
 
   const copyToClipboard = async (text: string, field: string) => {
@@ -172,6 +185,26 @@ export default function Settings() {
               </div>
 
               <div className="space-y-2">
+                <Label htmlFor="audio-webhook" className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Mic className="h-3 w-3" />
+                  Audio Bytes Webhook (for pronunciation analysis)
+                </Label>
+                <div className="flex gap-2">
+                  <Input 
+                    id="audio-webhook"
+                    value={setupInfo?.webhooks.audio || ""}
+                    readOnly
+                    className="font-mono text-xs"
+                    data-testid="input-audio-webhook"
+                  />
+                  <CopyButton text={setupInfo?.webhooks.audio || ""} field="audio" />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Streams raw audio for pronunciation analysis via Gemini
+                </p>
+              </div>
+
+              <div className="space-y-2">
                 <Label htmlFor="memory-webhook" className="text-xs text-muted-foreground">
                   Memory Trigger Webhook (optional)
                 </Label>
@@ -185,6 +218,34 @@ export default function Settings() {
                   />
                   <CopyButton text={setupInfo?.webhooks.memory || ""} field="memory" />
                 </div>
+              </div>
+            </div>
+
+            <Separator />
+
+            <div className="space-y-4">
+              <h4 className="font-medium text-sm text-foreground flex items-center gap-2">
+                <Cloud className="h-4 w-4" />
+                GCP Storage Status
+              </h4>
+              <div className="flex items-center gap-3">
+                {gcpStatus?.connected ? (
+                  <Badge variant="default" className="bg-green-500">
+                    <Check className="h-3 w-3 mr-1" /> Connected
+                  </Badge>
+                ) : gcpStatus?.configured ? (
+                  <Badge variant="secondary">Configured (not tested)</Badge>
+                ) : (
+                  <Badge variant="destructive">Not Configured</Badge>
+                )}
+                <span className="text-xs text-muted-foreground">
+                  {gcpStatus?.connected 
+                    ? "Audio will be stored in your GCP bucket for analysis"
+                    : gcpStatus?.configured
+                    ? "GCP credentials found but connection not verified"
+                    : "Add GCP_SERVICE_ACCOUNT_JSON and GCP_BUCKET_NAME secrets"
+                  }
+                </span>
               </div>
             </div>
 

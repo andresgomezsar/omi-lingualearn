@@ -8,7 +8,15 @@ import {
   type DailyChallenge,
   type InsertDailyChallenge,
   type Achievement,
-  type InsertAchievement
+  type InsertAchievement,
+  type AudioChunk,
+  type InsertAudioChunk,
+  type TranscriptSegment,
+  type InsertTranscriptSegment,
+  type AudioAnalysis,
+  type InsertAudioAnalysis,
+  type Lesson,
+  type InsertLesson
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 
@@ -52,6 +60,26 @@ export interface IStorage {
   getOmiConnection(userId: string): Promise<OmiConnection | undefined>;
   getOmiConnectionByUid(omiUid: string): Promise<OmiConnection | undefined>;
   
+  // Audio chunk methods
+  createAudioChunk(chunk: InsertAudioChunk): Promise<AudioChunk>;
+  getAudioChunks(sessionId: string): Promise<AudioChunk[]>;
+  getAudioChunk(id: number): Promise<AudioChunk | undefined>;
+  
+  // Transcript segment methods
+  createTranscriptSegment(segment: InsertTranscriptSegment): Promise<TranscriptSegment>;
+  getTranscriptSegments(sessionId: string): Promise<TranscriptSegment[]>;
+  
+  // Audio analysis methods
+  createAudioAnalysis(analysis: InsertAudioAnalysis): Promise<AudioAnalysis>;
+  getAudioAnalysis(sessionId: string): Promise<AudioAnalysis | undefined>;
+  updateAudioAnalysis(id: number, updates: Partial<AudioAnalysis>): Promise<AudioAnalysis | undefined>;
+  
+  // Lesson methods
+  createLesson(lesson: InsertLesson): Promise<Lesson>;
+  getLessons(userId: string): Promise<Lesson[]>;
+  getLesson(id: number): Promise<Lesson | undefined>;
+  completeLesson(id: number): Promise<Lesson | undefined>;
+  
   getOverviewStats(userId: string): Promise<{
     todayCompleted: number;
     todayTotal: number;
@@ -77,11 +105,20 @@ export class MemStorage implements IStorage {
   private dailyChallenges: Map<number, DailyChallenge>;
   private achievements: Map<number, Achievement>;
   private omiConnections: Map<string, OmiConnection>;
+  private audioChunks: Map<number, AudioChunk>;
+  private transcriptSegments: Map<number, TranscriptSegment>;
+  private audioAnalyses: Map<number, AudioAnalysis>;
+  private lessons: Map<number, Lesson>;
+  
   private nextItemId: number;
   private nextChallengeId: number;
   private nextAchievementId: number;
   private nextSessionId: number;
   private nextOmiConnectionId: number;
+  private nextAudioChunkId: number;
+  private nextTranscriptSegmentId: number;
+  private nextAudioAnalysisId: number;
+  private nextLessonId: number;
 
   constructor() {
     this.users = new Map();
@@ -90,11 +127,20 @@ export class MemStorage implements IStorage {
     this.dailyChallenges = new Map();
     this.achievements = new Map();
     this.omiConnections = new Map();
+    this.audioChunks = new Map();
+    this.transcriptSegments = new Map();
+    this.audioAnalyses = new Map();
+    this.lessons = new Map();
+    
     this.nextItemId = 1;
     this.nextChallengeId = 1;
     this.nextAchievementId = 1;
     this.nextSessionId = 1;
     this.nextOmiConnectionId = 1;
+    this.nextAudioChunkId = 1;
+    this.nextTranscriptSegmentId = 1;
+    this.nextAudioAnalysisId = 1;
+    this.nextLessonId = 1;
     
     this.initializeDemoData();
   }
@@ -143,8 +189,13 @@ export class MemStorage implements IStorage {
     demoItems.forEach((item, index) => {
       const id = this.nextItemId++;
       this.learningItems.set(id, {
-        ...item,
         id,
+        userId: item.userId,
+        sessionId: item.sessionId ?? null,
+        originalText: item.originalText,
+        correctedText: item.correctedText,
+        explanation: item.explanation,
+        category: item.category ?? null,
         easeFactor: 2.5,
         interval: index === 0 ? 0 : index * 2,
         repetitions: index,
@@ -249,8 +300,13 @@ export class MemStorage implements IStorage {
   async createLearningItem(item: InsertLearningItem): Promise<LearningItem> {
     const id = this.nextItemId++;
     const learningItem: LearningItem = {
-      ...item,
       id,
+      userId: item.userId,
+      sessionId: item.sessionId ?? null,
+      originalText: item.originalText,
+      correctedText: item.correctedText,
+      explanation: item.explanation,
+      category: item.category ?? null,
       easeFactor: 2.5,
       interval: 0,
       repetitions: 0,
@@ -334,12 +390,14 @@ export class MemStorage implements IStorage {
   async createDailyChallenge(challenge: InsertDailyChallenge): Promise<DailyChallenge> {
     const id = this.nextChallengeId++;
     const newChallenge: DailyChallenge = {
-      ...challenge,
       id,
+      userId: challenge.userId,
+      learningItemId: challenge.learningItemId ?? null,
+      challengeText: challenge.challengeText,
       completed: false,
       quality: null,
-      xpEarned: challenge.xpEarned || 25,
-      scheduledFor: challenge.scheduledFor || new Date(),
+      xpEarned: challenge.xpEarned ?? 25,
+      scheduledFor: challenge.scheduledFor ?? new Date(),
       completedAt: null,
       createdAt: new Date(),
     };
@@ -413,8 +471,12 @@ export class MemStorage implements IStorage {
   async createAchievement(achievement: InsertAchievement): Promise<Achievement> {
     const id = this.nextAchievementId++;
     const newAchievement: Achievement = {
-      ...achievement,
       id,
+      userId: achievement.userId,
+      type: achievement.type,
+      title: achievement.title,
+      description: achievement.description ?? null,
+      icon: achievement.icon ?? null,
       unlockedAt: new Date(),
     };
     this.achievements.set(id, newAchievement);
@@ -443,6 +505,136 @@ export class MemStorage implements IStorage {
     return Array.from(this.omiConnections.values()).find(c => c.omiUid === omiUid);
   }
 
+  // Audio chunk methods
+  async createAudioChunk(chunk: InsertAudioChunk): Promise<AudioChunk> {
+    const id = this.nextAudioChunkId++;
+    const newChunk: AudioChunk = {
+      id,
+      sessionId: chunk.sessionId,
+      userId: chunk.userId,
+      gcpUri: chunk.gcpUri,
+      startMs: chunk.startMs ?? null,
+      endMs: chunk.endMs ?? null,
+      sampleRate: chunk.sampleRate ?? 16000,
+      durationMs: chunk.durationMs ?? null,
+      chunkIndex: chunk.chunkIndex ?? 0,
+      createdAt: new Date(),
+    };
+    this.audioChunks.set(id, newChunk);
+    return newChunk;
+  }
+
+  async getAudioChunks(sessionId: string): Promise<AudioChunk[]> {
+    return Array.from(this.audioChunks.values())
+      .filter((chunk) => chunk.sessionId === sessionId)
+      .sort((a, b) => (a.chunkIndex || 0) - (b.chunkIndex || 0));
+  }
+
+  async getAudioChunk(id: number): Promise<AudioChunk | undefined> {
+    return this.audioChunks.get(id);
+  }
+
+  // Transcript segment methods
+  async createTranscriptSegment(segment: InsertTranscriptSegment): Promise<TranscriptSegment> {
+    const id = this.nextTranscriptSegmentId++;
+    const newSegment: TranscriptSegment = {
+      id,
+      sessionId: segment.sessionId,
+      userId: segment.userId,
+      text: segment.text,
+      speaker: segment.speaker ?? null,
+      speakerId: segment.speakerId ?? null,
+      isUser: segment.isUser ?? false,
+      startMs: segment.startMs ?? null,
+      endMs: segment.endMs ?? null,
+      confidence: segment.confidence ?? null,
+      createdAt: new Date(),
+    };
+    this.transcriptSegments.set(id, newSegment);
+    return newSegment;
+  }
+
+  async getTranscriptSegments(sessionId: string): Promise<TranscriptSegment[]> {
+    return Array.from(this.transcriptSegments.values())
+      .filter((segment) => segment.sessionId === sessionId)
+      .sort((a, b) => (a.startMs || 0) - (b.startMs || 0));
+  }
+
+  // Audio analysis methods
+  async createAudioAnalysis(analysis: InsertAudioAnalysis): Promise<AudioAnalysis> {
+    const id = this.nextAudioAnalysisId++;
+    const newAnalysis: AudioAnalysis = {
+      id,
+      sessionId: analysis.sessionId,
+      userId: analysis.userId,
+      compiledAudioUri: analysis.compiledAudioUri ?? null,
+      transcriptText: analysis.transcriptText ?? null,
+      pronunciationScore: analysis.pronunciationScore ?? null,
+      fluencyScore: analysis.fluencyScore ?? null,
+      accuracyScore: analysis.accuracyScore ?? null,
+      overallScore: analysis.overallScore ?? null,
+      analysisJson: analysis.analysisJson ?? null,
+      status: analysis.status ?? "pending",
+      geminiRequestId: analysis.geminiRequestId ?? null,
+      createdAt: new Date(),
+      completedAt: null,
+    };
+    this.audioAnalyses.set(id, newAnalysis);
+    return newAnalysis;
+  }
+
+  async getAudioAnalysis(sessionId: string): Promise<AudioAnalysis | undefined> {
+    return Array.from(this.audioAnalyses.values()).find(a => a.sessionId === sessionId);
+  }
+
+  async updateAudioAnalysis(id: number, updates: Partial<AudioAnalysis>): Promise<AudioAnalysis | undefined> {
+    const analysis = this.audioAnalyses.get(id);
+    if (!analysis) return undefined;
+    const updated = { ...analysis, ...updates };
+    this.audioAnalyses.set(id, updated);
+    return updated;
+  }
+
+  // Lesson methods
+  async createLesson(lesson: InsertLesson): Promise<Lesson> {
+    const id = this.nextLessonId++;
+    const newLesson: Lesson = {
+      id,
+      userId: lesson.userId,
+      sessionId: lesson.sessionId ?? null,
+      analysisId: lesson.analysisId ?? null,
+      lessonType: lesson.lessonType,
+      title: lesson.title,
+      content: lesson.content,
+      audioReferences: lesson.audioReferences ?? null,
+      difficulty: lesson.difficulty ?? "intermediate",
+      xpReward: lesson.xpReward ?? 50,
+      completed: false,
+      createdAt: new Date(),
+      completedAt: null,
+    };
+    this.lessons.set(id, newLesson);
+    return newLesson;
+  }
+
+  async getLessons(userId: string): Promise<Lesson[]> {
+    return Array.from(this.lessons.values())
+      .filter((lesson) => lesson.userId === userId)
+      .sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0));
+  }
+
+  async getLesson(id: number): Promise<Lesson | undefined> {
+    return this.lessons.get(id);
+  }
+
+  async completeLesson(id: number): Promise<Lesson | undefined> {
+    const lesson = this.lessons.get(id);
+    if (!lesson) return undefined;
+    const updated = { ...lesson, completed: true, completedAt: new Date() };
+    this.lessons.set(id, updated);
+    return updated;
+  }
+
   async getOverviewStats(userId: string): Promise<{
     todayCompleted: number;
     todayTotal: number;
@@ -465,7 +657,7 @@ export class MemStorage implements IStorage {
 
   async getWeeklyStats(userId: string): Promise<{ date: string; count: number }[]> {
     const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    return days.map((day, i) => ({
+    return days.map((day) => ({
       date: day,
       count: Math.floor(Math.random() * 8),
     }));

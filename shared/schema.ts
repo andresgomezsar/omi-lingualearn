@@ -68,6 +68,70 @@ export const achievements = pgTable("achievements", {
   unlockedAt: timestamp("unlocked_at").default(sql`CURRENT_TIMESTAMP`),
 });
 
+// Audio chunks received from Omi - stored in GCP bucket
+export const audioChunks = pgTable("audio_chunks", {
+  id: serial("id").primaryKey(),
+  sessionId: varchar("session_id").notNull(),
+  userId: varchar("user_id").notNull(),
+  gcpUri: text("gcp_uri").notNull(),
+  startMs: integer("start_ms"),
+  endMs: integer("end_ms"),
+  sampleRate: integer("sample_rate").default(16000),
+  durationMs: integer("duration_ms"),
+  chunkIndex: integer("chunk_index").default(0),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+});
+
+// Transcript segments with timing metadata for audio correlation
+export const transcriptSegments = pgTable("transcript_segments", {
+  id: serial("id").primaryKey(),
+  sessionId: varchar("session_id").notNull(),
+  userId: varchar("user_id").notNull(),
+  text: text("text").notNull(),
+  speaker: text("speaker"),
+  speakerId: integer("speaker_id"),
+  isUser: boolean("is_user").default(false),
+  startMs: real("start_ms"),
+  endMs: real("end_ms"),
+  confidence: real("confidence"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+});
+
+// Audio analysis results from Gemini
+export const audioAnalyses = pgTable("audio_analyses", {
+  id: serial("id").primaryKey(),
+  sessionId: varchar("session_id").notNull(),
+  userId: varchar("user_id").notNull(),
+  compiledAudioUri: text("compiled_audio_uri"),
+  transcriptText: text("transcript_text"),
+  pronunciationScore: integer("pronunciation_score"),
+  fluencyScore: integer("fluency_score"),
+  accuracyScore: integer("accuracy_score"),
+  overallScore: integer("overall_score"),
+  analysisJson: text("analysis_json"),
+  status: text("status").default("pending"),
+  geminiRequestId: text("gemini_request_id"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+  completedAt: timestamp("completed_at"),
+});
+
+// Generated lessons from audio analysis
+export const lessons = pgTable("lessons", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(),
+  sessionId: varchar("session_id"),
+  analysisId: integer("analysis_id"),
+  lessonType: text("lesson_type").notNull(),
+  title: text("title").notNull(),
+  content: text("content").notNull(),
+  audioReferences: text("audio_references"),
+  difficulty: text("difficulty").default("intermediate"),
+  xpReward: integer("xp_reward").default(50),
+  completed: boolean("completed").default(false),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
@@ -93,6 +157,28 @@ export const insertAchievementSchema = createInsertSchema(achievements).omit({
   unlockedAt: true,
 });
 
+export const insertAudioChunkSchema = createInsertSchema(audioChunks).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertTranscriptSegmentSchema = createInsertSchema(transcriptSegments).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertAudioAnalysisSchema = createInsertSchema(audioAnalyses).omit({
+  id: true,
+  createdAt: true,
+  completedAt: true,
+});
+
+export const insertLessonSchema = createInsertSchema(lessons).omit({
+  id: true,
+  createdAt: true,
+  completedAt: true,
+});
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type LearningItem = typeof learningItems.$inferSelect;
@@ -103,3 +189,11 @@ export type DailyChallenge = typeof dailyChallenges.$inferSelect;
 export type InsertDailyChallenge = z.infer<typeof insertDailyChallengeSchema>;
 export type Achievement = typeof achievements.$inferSelect;
 export type InsertAchievement = z.infer<typeof insertAchievementSchema>;
+export type AudioChunk = typeof audioChunks.$inferSelect;
+export type InsertAudioChunk = z.infer<typeof insertAudioChunkSchema>;
+export type TranscriptSegment = typeof transcriptSegments.$inferSelect;
+export type InsertTranscriptSegment = z.infer<typeof insertTranscriptSegmentSchema>;
+export type AudioAnalysis = typeof audioAnalyses.$inferSelect;
+export type InsertAudioAnalysis = z.infer<typeof insertAudioAnalysisSchema>;
+export type Lesson = typeof lessons.$inferSelect;
+export type InsertLesson = z.infer<typeof insertLessonSchema>;
