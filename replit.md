@@ -51,14 +51,16 @@ shared/
 - `GET /api/gcp/status` - Check GCP storage connection status
 
 ### Audio Processing Pipeline
-1. Omi device sends audio bytes to `/api/omi/webhook/audio`
-2. Audio chunks uploaded to GCP bucket at `{userId}/{sessionId}/chunks/{timestamp}_{index}.pcm`
-3. Chunk metadata stored in audioChunks table
-4. On session end, `/api/omi/compile-session/:sessionId` is called
-5. All chunks downloaded, concatenated, and uploaded as compiled audio
-6. Gemini analyzes transcript for grammar/vocabulary/pronunciation issues
-7. Scores calculated dynamically based on analysis results
-8. Lessons and learning items generated from identified issues
+1. Omi device sends audio bytes (PCM16, 16kHz, mono) to unified hub `/api/omi/hub`
+2. Audio chunks accumulated in memory per user+session
+3. When ~1 minute of audio accumulated (~1.9MB), compiled to WAV with proper headers
+4. Compiled WAV uploaded to GCP bucket at `{userId}/compiled/{startMs}_{endMs}.wav`
+5. Metadata stored in `compiledAudioFiles` table with start/end timestamps
+
+### Smart Gemini Analysis (Cost Saving)
+- Gemini analysis only triggered when transcript has **real speaker names** (not "Speaker 1", "User 2", etc.)
+- Real name detection filters out generic patterns: speaker, user, person, voice, participant, attendee, guest, caller, member, host, unknown, anonymous
+- When real name detected, audio files with overlapping timestamps are matched for potential pronunciation analysis
 
 ### Chat Tools
 1. **analyze_speech** - Analyze text for grammar/vocabulary issues
@@ -91,9 +93,10 @@ shared/
 
 ## GCP Storage Integration
 - Requires `GCP_SERVICE_ACCOUNT_JSON` and `GCP_BUCKET_NAME` secrets
-- Audio stored at: `gs://{bucket}/{userId}/{sessionId}/chunks/{timestamp}_{index}.pcm`
-- Compiled audio stored at: `gs://{bucket}/{userId}/{sessionId}/compiled.wav`
+- **Important**: Bucket name should be `omi-language-app` (with hyphens, not underscores)
+- Compiled WAV files stored at: `gs://{bucket}/{userId}/compiled/{startMs}_{endMs}.wav`
 - Settings page shows GCP connection status
+- WAV format: PCM16, 16-bit little-endian, 16kHz, mono
 
 ## Design System
 - Primary: Teal (#14B8A6)

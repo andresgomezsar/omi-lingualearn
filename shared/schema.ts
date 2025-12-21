@@ -115,6 +115,19 @@ export const audioAnalyses = pgTable("audio_analyses", {
   completedAt: timestamp("completed_at"),
 });
 
+// Compiled WAV files with timestamps for transcript matching
+export const compiledAudioFiles = pgTable("compiled_audio_files", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(),
+  gcpUri: text("gcp_uri").notNull(),
+  startTimestamp: timestamp("start_timestamp").notNull(),
+  endTimestamp: timestamp("end_timestamp").notNull(),
+  durationMs: integer("duration_ms").notNull(),
+  sampleRate: integer("sample_rate").default(16000),
+  fileSize: integer("file_size"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+});
+
 // Generated lessons from audio analysis
 export const lessons = pgTable("lessons", {
   id: serial("id").primaryKey(),
@@ -179,6 +192,11 @@ export const insertLessonSchema = createInsertSchema(lessons).omit({
   completedAt: true,
 });
 
+export const insertCompiledAudioFileSchema = createInsertSchema(compiledAudioFiles).omit({
+  id: true,
+  createdAt: true,
+});
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type LearningItem = typeof learningItems.$inferSelect;
@@ -197,3 +215,5 @@ export type AudioAnalysis = typeof audioAnalyses.$inferSelect;
 export type InsertAudioAnalysis = z.infer<typeof insertAudioAnalysisSchema>;
 export type Lesson = typeof lessons.$inferSelect;
 export type InsertLesson = z.infer<typeof insertLessonSchema>;
+export type CompiledAudioFile = typeof compiledAudioFiles.$inferSelect;
+export type InsertCompiledAudioFile = z.infer<typeof insertCompiledAudioFileSchema>;

@@ -3,6 +3,47 @@ import { Storage } from "@google-cloud/storage";
 let storage: Storage | null = null;
 let bucketName: string | null = null;
 
+/**
+ * Create a WAV header for PCM16 audio data
+ * @param dataLength - Length of the PCM data in bytes
+ * @param sampleRate - Sample rate in Hz (default 16000)
+ * @param numChannels - Number of channels (default 1 for mono)
+ * @param bitsPerSample - Bits per sample (default 16)
+ */
+export function createWavHeader(
+  dataLength: number,
+  sampleRate: number = 16000,
+  numChannels: number = 1,
+  bitsPerSample: number = 16
+): Buffer {
+  const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+  const blockAlign = numChannels * (bitsPerSample / 8);
+  const fileSize = 36 + dataLength;
+  
+  const header = Buffer.alloc(44);
+  
+  // RIFF chunk
+  header.write('RIFF', 0);
+  header.writeUInt32LE(fileSize, 4);
+  header.write('WAVE', 8);
+  
+  // fmt subchunk
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16); // Subchunk1Size for PCM
+  header.writeUInt16LE(1, 20); // AudioFormat: PCM = 1
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  
+  // data subchunk
+  header.write('data', 36);
+  header.writeUInt32LE(dataLength, 40);
+  
+  return header;
+}
+
 function getStorage(): Storage {
   if (!storage) {
     const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
@@ -67,32 +108,43 @@ export async function uploadAudioChunk(
 }
 
 /**
- * Upload compiled audio file to GCP bucket
- * Path format: {userId}/{sessionId}/compiled.wav
+ * Upload compiled WAV file to GCP bucket with timestamp-based filename
+ * Path format: {userId}/compiled/{startTimestamp}_{endTimestamp}.wav
  */
-export async function uploadCompiledAudio(
+export async function uploadCompiledWav(
   userId: string,
-  sessionId: string,
-  audioData: Buffer
-): Promise<string> {
+  pcmData: Buffer,
+  sampleRate: number,
+  startTimestamp: Date,
+  endTimestamp: Date
+): Promise<{ gcpUri: string; fileSize: number }> {
   const storage = getStorage();
   const bucket = storage.bucket(getBucketName());
   
-  const filePath = `${userId}/${sessionId}/compiled.wav`;
+  // Create WAV header and combine with PCM data
+  const wavHeader = createWavHeader(pcmData.length, sampleRate);
+  const wavData = Buffer.concat([wavHeader, pcmData]);
+  
+  // Use timestamps for filename
+  const startMs = startTimestamp.getTime();
+  const endMs = endTimestamp.getTime();
+  const filePath = `${userId}/compiled/${startMs}_${endMs}.wav`;
   const file = bucket.file(filePath);
   
-  await file.save(audioData, {
+  await file.save(wavData, {
     contentType: "audio/wav",
     metadata: {
       userId,
-      sessionId,
-      compiledAt: new Date().toISOString(),
+      startTimestamp: startTimestamp.toISOString(),
+      endTimestamp: endTimestamp.toISOString(),
+      sampleRate: sampleRate.toString(),
+      durationMs: (endMs - startMs).toString(),
     },
   });
 
   const gcpUri = `gs://${getBucketName()}/${filePath}`;
-  console.log(`Uploaded compiled audio to ${gcpUri}`);
-  return gcpUri;
+  console.log(`Uploaded compiled WAV to ${gcpUri} (${wavData.length} bytes)`);
+  return { gcpUri, fileSize: wavData.length };
 }
 
 /**

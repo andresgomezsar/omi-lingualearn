@@ -16,7 +16,9 @@ import {
   type AudioAnalysis,
   type InsertAudioAnalysis,
   type Lesson,
-  type InsertLesson
+  type InsertLesson,
+  type CompiledAudioFile,
+  type InsertCompiledAudioFile
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 
@@ -80,6 +82,11 @@ export interface IStorage {
   getLesson(id: number): Promise<Lesson | undefined>;
   completeLesson(id: number): Promise<Lesson | undefined>;
   
+  // Compiled audio file methods
+  createCompiledAudioFile(file: InsertCompiledAudioFile): Promise<CompiledAudioFile>;
+  getCompiledAudioFiles(userId: string): Promise<CompiledAudioFile[]>;
+  getCompiledAudioFilesInRange(userId: string, startTime: Date, endTime: Date): Promise<CompiledAudioFile[]>;
+  
   getOverviewStats(userId: string): Promise<{
     todayCompleted: number;
     todayTotal: number;
@@ -109,6 +116,7 @@ export class MemStorage implements IStorage {
   private transcriptSegments: Map<number, TranscriptSegment>;
   private audioAnalyses: Map<number, AudioAnalysis>;
   private lessons: Map<number, Lesson>;
+  private compiledAudioFiles: Map<number, CompiledAudioFile>;
   
   private nextItemId: number;
   private nextChallengeId: number;
@@ -119,6 +127,7 @@ export class MemStorage implements IStorage {
   private nextTranscriptSegmentId: number;
   private nextAudioAnalysisId: number;
   private nextLessonId: number;
+  private nextCompiledAudioFileId: number;
 
   constructor() {
     this.users = new Map();
@@ -131,6 +140,7 @@ export class MemStorage implements IStorage {
     this.transcriptSegments = new Map();
     this.audioAnalyses = new Map();
     this.lessons = new Map();
+    this.compiledAudioFiles = new Map();
     
     this.nextItemId = 1;
     this.nextChallengeId = 1;
@@ -141,6 +151,7 @@ export class MemStorage implements IStorage {
     this.nextTranscriptSegmentId = 1;
     this.nextAudioAnalysisId = 1;
     this.nextLessonId = 1;
+    this.nextCompiledAudioFileId = 1;
     
     this.initializeDemoData();
   }
@@ -633,6 +644,35 @@ export class MemStorage implements IStorage {
     const updated = { ...lesson, completed: true, completedAt: new Date() };
     this.lessons.set(id, updated);
     return updated;
+  }
+  
+  async createCompiledAudioFile(file: InsertCompiledAudioFile): Promise<CompiledAudioFile> {
+    const id = this.nextCompiledAudioFileId++;
+    const newFile: CompiledAudioFile = {
+      ...file,
+      id,
+      sampleRate: file.sampleRate ?? 16000,
+      fileSize: file.fileSize ?? null,
+      createdAt: new Date(),
+    };
+    this.compiledAudioFiles.set(id, newFile);
+    return newFile;
+  }
+  
+  async getCompiledAudioFiles(userId: string): Promise<CompiledAudioFile[]> {
+    return Array.from(this.compiledAudioFiles.values())
+      .filter(f => f.userId === userId)
+      .sort((a, b) => b.startTimestamp.getTime() - a.startTimestamp.getTime());
+  }
+  
+  async getCompiledAudioFilesInRange(userId: string, startTime: Date, endTime: Date): Promise<CompiledAudioFile[]> {
+    return Array.from(this.compiledAudioFiles.values())
+      .filter(f => 
+        f.userId === userId &&
+        f.endTimestamp >= startTime &&
+        f.startTimestamp <= endTime
+      )
+      .sort((a, b) => a.startTimestamp.getTime() - b.startTimestamp.getTime());
   }
 
   async getOverviewStats(userId: string): Promise<{

@@ -14,6 +14,67 @@ const ai = new GoogleGenAI({
 
 const DEFAULT_USER_ID = "demo-user";
 
+// In-memory audio buffer for accumulating chunks per user+session
+// When buffer reaches ~1 minute of audio, compile to WAV and upload
+interface AudioBuffer {
+  chunks: Buffer[];
+  startTimestamp: Date;
+  sampleRate: number;
+  totalBytes: number;
+}
+
+// Key format: "userId:sessionId" to avoid cross-session mixing
+const audioBuffers: Map<string, AudioBuffer> = new Map();
+
+// Target: ~1 minute of audio at 16kHz, 16-bit mono = 16000 * 2 * 60 = 1,920,000 bytes
+const TARGET_AUDIO_BYTES = 1920000;
+
+/**
+ * Check if a speaker name is a real name (not generic like "Speaker 0", "Speaker 1", etc.)
+ * Returns true if the name appears to be a real person's name
+ */
+function isRealSpeakerName(speaker: string | null | undefined): boolean {
+  if (!speaker) return false;
+  
+  const trimmed = speaker.trim();
+  if (trimmed.length < 2) return false;
+  
+  // Generic speaker patterns to reject (comprehensive list)
+  const genericPatterns = [
+    /^speaker[\s\-_]*\d*$/i,      // "Speaker", "Speaker 0", "Speaker-1", "speaker_02"
+    /^user[\s\-_]*\d*$/i,         // "User", "User 1", "user-2"
+    /^person[\s\-_]*\d*$/i,       // "Person", "Person 1"
+    /^voice[\s\-_]*\d*$/i,        // "Voice", "Voice 1"
+    /^participant[\s\-_]*\d*$/i,  // "Participant", "Participant 1"
+    /^attendee[\s\-_]*\d*$/i,     // "Attendee", "Attendee 1"
+    /^guest[\s\-_]*\d*$/i,        // "Guest", "Guest 1"
+    /^caller[\s\-_]*\d*$/i,       // "Caller", "Caller 1"
+    /^member[\s\-_]*\d*$/i,       // "Member", "Member 1"
+    /^host[\s\-_]*\d*$/i,         // "Host" (generic meeting host)
+    /^meeting\s+speaker/i,        // "Meeting Speaker"
+    /^unknown/i,                  // "Unknown", "Unknown Speaker"
+    /^unidentified/i,             // "Unidentified"
+    /^anonymous/i,                // "Anonymous"
+    /^\d+$/,                      // Just numbers
+    /^[A-Z]$/,                    // Single letters
+    /^me$/i,                      // "Me"
+    /^you$/i,                     // "You"
+    /^other$/i,                   // "Other"
+  ];
+  
+  for (const pattern of genericPatterns) {
+    if (pattern.test(trimmed)) {
+      return false;
+    }
+  }
+  
+  // Must contain at least some alphabetic characters (not just numbers/symbols)
+  const alphaCount = (trimmed.match(/[a-zA-Z]/g) || []).length;
+  if (alphaCount < 2) return false;
+  
+  return true;
+}
+
 function getBaseUrl(req: Request): string {
   const host = req.get('host') || 'localhost:5000';
   const protocol = req.get('x-forwarded-proto') || req.protocol || 'https';
@@ -379,9 +440,13 @@ export async function registerRoutes(
           
           // Concatenate raw PCM audio
           const compiledPcm = Buffer.concat(audioBuffers);
+          const sampleRate = chunks[0]?.sampleRate || 16000;
           
-          // Upload compiled audio (as PCM for now - WAV header generation would require additional processing)
-          compiledAudioUri = await gcpStorage.uploadCompiledAudio(uid, sessionId, compiledPcm);
+          // Upload compiled audio with proper WAV header
+          const startTime = chunks[0]?.createdAt || new Date();
+          const endTime = chunks[chunks.length - 1]?.createdAt || new Date();
+          const result = await gcpStorage.uploadCompiledWav(uid, compiledPcm, sampleRate, startTime, endTime);
+          compiledAudioUri = result.gcpUri;
           console.log(`Compiled audio uploaded: ${compiledAudioUri}`);
 
           // Update analysis with compiled audio URI
@@ -770,52 +835,96 @@ export async function registerRoutes(
         }
 
         case "audio": {
-          // Handle audio bytes
+          // Handle audio bytes - accumulate and compile ~1 minute WAV files
           const sampleRate = parseInt(req.query.sample_rate as string) || 16000;
-          const sessionId = session_id || `audio-${Date.now()}`;
+          const userId = uid || DEFAULT_USER_ID;
+          const sessionId = session_id || "default";
+          const bufferKey = `${userId}:${sessionId}`;
           
           const chunks: Buffer[] = [];
           req.on('data', (chunk: Buffer) => chunks.push(chunk));
           req.on('end', async () => {
             try {
-              const audioBuffer = Buffer.concat(chunks);
+              const audioChunk = Buffer.concat(chunks);
               
-              if (audioBuffer.length === 0) {
+              if (audioChunk.length === 0) {
                 return res.json({ status: "ok" });
               }
 
               if (!gcpStorage.isConfigured()) {
+                console.log("GCP not configured, skipping audio storage");
                 return res.json({ status: "ok", message: "GCP not configured" });
               }
 
-              const existingChunks = await storage.getAudioChunks(sessionId);
-              const chunkIndex = existingChunks.length;
-              const timestamp = Date.now();
-              const samples = audioBuffer.length / 2;
-              const durationMs = Math.round((samples / sampleRate) * 1000);
+              // Get or create buffer for this user+session
+              let buffer = audioBuffers.get(bufferKey);
+              if (!buffer) {
+                buffer = {
+                  chunks: [],
+                  startTimestamp: new Date(),
+                  sampleRate,
+                  totalBytes: 0
+                };
+                audioBuffers.set(bufferKey, buffer);
+              }
 
-              const gcpUri = await gcpStorage.uploadAudioChunk(
-                uid || DEFAULT_USER_ID,
-                sessionId,
-                audioBuffer,
-                timestamp,
-                chunkIndex
-              );
+              // Add chunk to buffer
+              buffer.chunks.push(audioChunk);
+              buffer.totalBytes += audioChunk.length;
+              
+              console.log(`Audio buffer for ${bufferKey}: ${buffer.totalBytes} bytes (${Math.round(buffer.totalBytes / TARGET_AUDIO_BYTES * 100)}% of target)`);
 
-              await storage.createAudioChunk({
-                sessionId,
-                userId: uid || DEFAULT_USER_ID,
-                gcpUri,
-                startMs: chunkIndex > 0 ? existingChunks[chunkIndex - 1]?.endMs || 0 : 0,
-                endMs: (chunkIndex > 0 ? existingChunks[chunkIndex - 1]?.endMs || 0 : 0) + durationMs,
-                sampleRate,
-                durationMs,
-                chunkIndex,
-              });
+              // Check if we've accumulated ~1 minute of audio
+              if (buffer.totalBytes >= TARGET_AUDIO_BYTES) {
+                const endTimestamp = new Date();
+                const allPcmData = Buffer.concat(buffer.chunks);
+                
+                // Take exactly TARGET_AUDIO_BYTES for this compilation, preserve the rest
+                const pcmToCompile = allPcmData.subarray(0, TARGET_AUDIO_BYTES);
+                const leftoverPcm = allPcmData.subarray(TARGET_AUDIO_BYTES);
+                
+                const durationMs = Math.round((pcmToCompile.length / 2 / sampleRate) * 1000);
+                
+                console.log(`Compiling ${durationMs}ms of audio for ${bufferKey}, ${leftoverPcm.length} bytes leftover...`);
+                
+                try {
+                  // Upload compiled WAV to GCP
+                  const { gcpUri, fileSize } = await gcpStorage.uploadCompiledWav(
+                    userId,
+                    pcmToCompile,
+                    sampleRate,
+                    buffer.startTimestamp,
+                    endTimestamp
+                  );
+                  
+                  // Store metadata in database
+                  await storage.createCompiledAudioFile({
+                    userId,
+                    gcpUri,
+                    startTimestamp: buffer.startTimestamp,
+                    endTimestamp,
+                    durationMs,
+                    sampleRate,
+                    fileSize
+                  });
+                  
+                  console.log(`Compiled WAV uploaded: ${gcpUri}`);
+                } catch (uploadError) {
+                  console.error("Error uploading compiled WAV:", uploadError);
+                }
+                
+                // Start new buffer with leftover data
+                audioBuffers.set(bufferKey, {
+                  chunks: leftoverPcm.length > 0 ? [leftoverPcm] : [],
+                  startTimestamp: new Date(),
+                  sampleRate,
+                  totalBytes: leftoverPcm.length
+                });
+              }
 
               res.json({ status: "ok" });
-            } catch (uploadError) {
-              console.error("Error uploading audio:", uploadError);
+            } catch (error) {
+              console.error("Error processing audio:", error);
               res.status(500).json({ status: "error" });
             }
           });
@@ -826,28 +935,79 @@ export async function registerRoutes(
           // Handle memory trigger (conversation end)
           const memory = req.body;
           const segments = memory?.transcript_segments;
+          const userId = uid || DEFAULT_USER_ID;
           
           if (Array.isArray(segments) && segments.length > 0) {
-            const userText = segments
-              .filter((seg: { is_user?: boolean }) => seg.is_user === true)
-              .map((seg: { text: string }) => seg.text)
-              .join(' ');
+            // Check if any segment has a real speaker name (not "Speaker 1" etc.)
+            const segmentsWithRealNames = segments.filter((seg: { speaker?: string }) => 
+              isRealSpeakerName(seg.speaker)
+            );
             
-            if (userText.length > 20) {
-              const analysis = await analyzeConversationWithGemini(userText);
+            const hasRealSpeakerName = segmentsWithRealNames.length > 0;
+            
+            console.log(`Memory event: ${segments.length} segments, ${segmentsWithRealNames.length} with real names, hasRealName=${hasRealSpeakerName}`);
+            
+            // Only analyze if there's a real speaker name (saves costs)
+            if (hasRealSpeakerName) {
+              // Get the time range of segments with real names
+              const segmentTimes = segmentsWithRealNames
+                .filter((seg: { start?: number; end?: number }) => seg.start !== undefined && seg.end !== undefined)
+                .map((seg: { start: number; end: number }) => ({ start: seg.start, end: seg.end }));
               
-              if (analysis.issues && analysis.issues.length > 0) {
-                for (const issue of analysis.issues) {
-                  await storage.createLearningItem({
-                    userId: uid || DEFAULT_USER_ID,
-                    sessionId: memory?.id,
-                    originalText: issue.original,
-                    correctedText: issue.corrected,
-                    explanation: issue.explanation,
-                    category: issue.category || "grammar",
-                  });
+              if (segmentTimes.length > 0) {
+                const minStart = Math.min(...segmentTimes.map(t => t.start));
+                const maxEnd = Math.max(...segmentTimes.map(t => t.end));
+                
+                // Convert relative ms to actual timestamps (approximate)
+                // Assuming the memory was created at the end of the conversation
+                const now = new Date();
+                const conversationDuration = maxEnd; // ms from start
+                const startTime = new Date(now.getTime() - conversationDuration);
+                const endTime = now;
+                
+                // Find audio files with overlapping timestamps
+                const matchingAudioFiles = await storage.getCompiledAudioFilesInRange(
+                  userId,
+                  startTime,
+                  endTime
+                );
+                
+                console.log(`Found ${matchingAudioFiles.length} audio files matching time range ${startTime.toISOString()} - ${endTime.toISOString()}`);
+                
+                // Get text from segments with real names for analysis
+                const userText = segmentsWithRealNames
+                  .filter((seg: { is_user?: boolean }) => seg.is_user === true)
+                  .map((seg: { text: string }) => seg.text)
+                  .join(' ');
+                
+                if (userText.length > 20) {
+                  console.log(`Analyzing transcript with real speaker names: "${userText.slice(0, 100)}..."`);
+                  
+                  const analysis = await analyzeConversationWithGemini(userText);
+                  
+                  if (analysis.issues && analysis.issues.length > 0) {
+                    for (const issue of analysis.issues) {
+                      await storage.createLearningItem({
+                        userId,
+                        sessionId: memory?.id,
+                        originalText: issue.original,
+                        correctedText: issue.corrected,
+                        explanation: issue.explanation,
+                        category: issue.category || "grammar",
+                      });
+                    }
+                    
+                    console.log(`Created ${analysis.issues.length} learning items from analysis`);
+                  }
+                }
+                
+                // TODO: If matchingAudioFiles.length > 0, could send audio to Gemini for pronunciation analysis
+                if (matchingAudioFiles.length > 0) {
+                  console.log(`Audio files available for pronunciation analysis: ${matchingAudioFiles.map(f => f.gcpUri).join(', ')}`);
                 }
               }
+            } else {
+              console.log("No real speaker names found, skipping analysis to save costs");
             }
           }
           return res.json({ status: "ok" });
