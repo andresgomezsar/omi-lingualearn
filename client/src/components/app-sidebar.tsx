@@ -6,7 +6,8 @@ import {
   Trophy, 
   Settings, 
   Headphones,
-  Zap
+  Zap,
+  MessageCircle
 } from "lucide-react";
 import {
   Sidebar,
@@ -27,6 +28,7 @@ const menuItems = [
   { title: "Dashboard", url: "/dashboard", icon: Home },
   { title: "Today's Challenges", url: "/challenges", icon: Target },
   { title: "Learning Items", url: "/items", icon: Headphones },
+  { title: "Language Coach", url: "/chat", icon: MessageCircle },
   { title: "Progress", url: "/progress", icon: BarChart3 },
   { title: "Achievements", url: "/achievements", icon: Trophy },
   { title: "Settings", url: "/settings", icon: Settings },

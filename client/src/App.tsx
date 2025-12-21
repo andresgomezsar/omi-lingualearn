@@ -16,6 +16,7 @@ import LearningItems from "@/pages/learning-items";
 import Progress from "@/pages/progress";
 import Achievements from "@/pages/achievements";
 import Settings from "@/pages/settings";
+import Chat from "@/pages/chat";
 
 function DashboardLayout({ children }: { children: React.ReactNode }) {
   const style = {
@@ -65,6 +66,9 @@ function Router() {
       </Route>
       <Route path="/settings">
         <DashboardLayout><Settings /></DashboardLayout>
+      </Route>
+      <Route path="/chat">
+        <DashboardLayout><Chat /></DashboardLayout>
       </Route>
       <Route component={NotFound} />
     </Switch>

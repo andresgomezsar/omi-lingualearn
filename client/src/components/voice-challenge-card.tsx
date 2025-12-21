@@ -53,6 +53,26 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
     },
   });
 
+  const regenerateMutation = useMutation({
+    mutationFn: async (challengeId: number) => {
+      return apiRequest("POST", `/api/voice-challenges/${challengeId}/regenerate`, {});
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/voice-challenges/active"] });
+      toast({
+        title: "New challenge generated!",
+        description: "Here's a different speaking prompt for you.",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Failed to regenerate",
+        description: "Please try again later.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const challenge = activeChallenge;
   const isCompleted = challenge?.status === "completed";
   const feedback = challenge?.feedbackJson ? JSON.parse(challenge.feedbackJson) : null;
@@ -214,18 +234,34 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
         )}
 
         {!isCompleted && (
-          <div className="bg-accent/10 rounded-lg p-4">
-            <div className="flex items-center gap-3">
-              <Mic className="h-6 w-6 text-primary" />
-              <div className="flex-1">
-                <p className="text-sm font-medium text-foreground">
-                  How to complete this challenge
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Say "lingua learn" to your Omi device, then speak your response. Your speech will be analyzed automatically.
-                </p>
+          <div className="space-y-3">
+            <div className="bg-accent/10 rounded-lg p-4">
+              <div className="flex items-center gap-3">
+                <Mic className="h-6 w-6 text-primary" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-foreground">
+                    How to complete this challenge
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Say "lingua learn" to your Omi device, then speak your response. Your speech will be analyzed automatically.
+                  </p>
+                </div>
               </div>
             </div>
+            <Button
+              variant="outline"
+              onClick={() => challenge.id && regenerateMutation.mutate(challenge.id)}
+              disabled={regenerateMutation.isPending}
+              className="w-full"
+              data-testid="button-skip-challenge"
+            >
+              {regenerateMutation.isPending ? (
+                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-2" />
+              )}
+              Skip and Get Different Challenge
+            </Button>
           </div>
         )}
       </CardContent>
