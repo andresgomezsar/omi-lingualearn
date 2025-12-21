@@ -1604,11 +1604,15 @@ ${contextPrompt}`;
     try {
       const { generateChallengePrompt } = await import("./gemini-challenge");
       
+      // Check user's demo data preference
+      const user = await storage.getUser(DEFAULT_USER_ID);
+      const demoDataEnabled = user?.demoDataEnabled ?? true; // Default to true for backward compatibility
+      
       // Get a random user fact (or use provided one)
       let userFact = await storage.getRandomUserFact(DEFAULT_USER_ID);
       
-      // If no facts exist, create some demo ones
-      if (!userFact) {
+      // Only create demo facts if demo mode is enabled
+      if (!userFact && demoDataEnabled) {
         const demoFacts = [
           { content: "User loves traveling and has visited Japan twice", category: "preference" },
           { content: "User enjoys cooking Italian food on weekends", category: "hobby" },
@@ -1628,7 +1632,15 @@ ${contextPrompt}`;
       }
 
       if (!userFact) {
-        return res.status(500).json({ error: "Failed to get user fact" });
+        // Different error message based on demo mode
+        if (demoDataEnabled) {
+          return res.status(500).json({ error: "Failed to get user fact" });
+        } else {
+          return res.status(400).json({ 
+            error: "No Omi memories found", 
+            message: "Connect your Omi device and say 'lingua learn' to create memories, or enable Demo Mode in Settings." 
+          });
+        }
       }
 
       // Generate challenge prompt using Gemini

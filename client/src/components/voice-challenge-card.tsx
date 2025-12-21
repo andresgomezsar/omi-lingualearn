@@ -35,7 +35,7 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
 
   const generateMutation = useMutation({
     mutationFn: async () => {
-      return apiRequest("POST", "/api/voice-challenges/generate", {});
+      await apiRequest("POST", "/api/voice-challenges/generate", {});
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/voice-challenges/active"] });
@@ -44,10 +44,14 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
         description: "Your personalized challenge has been created.",
       });
     },
-    onError: () => {
+    onError: (error: Error) => {
+      // Check if it's a "no memories" error
+      const isNoMemories = error.message?.includes("No Omi memories");
       toast({
-        title: "Failed to generate challenge",
-        description: "Please try again later.",
+        title: isNoMemories ? "No memories found" : "Failed to generate challenge",
+        description: isNoMemories 
+          ? "Connect your Omi device or enable Demo Mode in Settings." 
+          : "Please try again later.",
         variant: "destructive",
       });
     },
@@ -55,7 +59,7 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
 
   const regenerateMutation = useMutation({
     mutationFn: async (challengeId: number) => {
-      return apiRequest("POST", `/api/voice-challenges/${challengeId}/regenerate`, {});
+      await apiRequest("POST", `/api/voice-challenges/${challengeId}/regenerate`, {});
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/voice-challenges/active"] });
@@ -64,10 +68,13 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
         description: "Here's a different speaking prompt for you.",
       });
     },
-    onError: () => {
+    onError: (error: Error) => {
+      const isNoAlternatives = error.message?.includes("No alternative");
       toast({
-        title: "Failed to regenerate",
-        description: "Please try again later.",
+        title: isNoAlternatives ? "No alternatives available" : "Failed to regenerate",
+        description: isNoAlternatives 
+          ? "You need more Omi memories to generate different challenges." 
+          : "Please try again later.",
         variant: "destructive",
       });
     },

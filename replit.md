@@ -13,9 +13,11 @@ The application is fully functional with:
 - Learning items queue with spaced repetition scheduling
 - Progress tracking with weekly activity charts
 - Achievement system for gamification
-- Settings page with Omi device setup and language preferences
+- **Language Coach Chat**: Ask questions about challenges with Gemini AI
+- **Settings page** with profile, user ID, data reset, and demo mode toggle
 - Dark/light theme support
 - **Full Omi Integration** with webhooks, trigger phrase detection, and auto-response analysis
+- **Demo Data Toggle**: Control whether to use sample data or real Omi memories only
 
 ## Tech Stack
 - **Frontend**: React, TypeScript, TailwindCSS, Framer Motion, Shadcn UI
@@ -99,7 +101,19 @@ Gemini analyzes response → Challenge Completed with feedback + XP
 - `POST /api/voice-challenges/generate` - Generate new personalized challenge
 - `GET /api/voice-challenges/active` - Get active challenge for user
 - `POST /api/voice-challenges/:id/respond` - Submit response and get feedback
+- `POST /api/voice-challenges/:id/regenerate` - Skip current and generate new challenge
 - `GET /api/voice-challenges/history` - Get completed challenges
+
+### Authentication & User Endpoints
+- `POST /api/auth/login-omi` - Login with Omi UID (creates user if doesn't exist)
+- `GET /api/user/profile` - Get current user profile and stats
+- `PATCH /api/user/preferences` - Update user preferences (demo mode, languages)
+- `POST /api/user/reset` - Reset all user learning data
+
+### Chat Endpoints
+- `GET /api/chat/messages` - Get chat message history
+- `POST /api/chat/send` - Send message to Gemini language coach
+- `DELETE /api/chat/clear` - Clear chat history
 
 ### Database Tables
 - `voice_challenges` - Stores challenge prompts, responses, feedback, scores, XP
