@@ -126,7 +126,7 @@ export default function Challenges() {
               Today's Challenges
             </h1>
             <p className="text-muted-foreground">
-              {pendingChallenges.length} challenges remaining
+              {pendingChallenges.length} challenges remaining · Personalized from your Omi memories
             </p>
           </div>
         </div>

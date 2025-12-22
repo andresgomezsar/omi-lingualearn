@@ -110,7 +110,7 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
                 Ready for a Voice Challenge?
               </h3>
               <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                Get a personalized speaking prompt based on your interests. Practice your language skills and receive instant feedback!
+                Get a personalized speaking prompt based on your Omi memories and conversations. Practice your language skills and receive instant audio pronunciation feedback!
               </p>
             </div>
             <Button
