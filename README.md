@@ -70,7 +70,7 @@ Omi LinguaLearn transforms language learning into an engaging, personalized expe
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/omi-lingualearn.git
+git clone https://github.com/andresgomezsar/omi-lingualearn.git
 cd omi-lingualearn
 ```
 
