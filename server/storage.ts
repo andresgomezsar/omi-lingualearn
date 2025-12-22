@@ -110,6 +110,8 @@ export interface IStorage {
   // Auth methods
   getUserByOmiUid(omiUid: string): Promise<User | undefined>;
   updateUserOmiUid(userId: string, omiUid: string): Promise<User | undefined>;
+  getAllUsers(): Promise<User[]>;
+  getMostRecentUser(): Promise<User | undefined>;
   
   // User preferences
   updateUserPreferences(userId: string, updates: { demoDataEnabled?: boolean; nativeLanguage?: string; targetLanguage?: string }): Promise<User | undefined>;
@@ -910,6 +912,19 @@ export class MemStorage implements IStorage {
     const updated = { ...user, omiUid };
     this.users.set(userId, updated);
     return updated;
+  }
+
+  async getAllUsers(): Promise<User[]> {
+    return Array.from(this.users.values());
+  }
+
+  async getMostRecentUser(): Promise<User | undefined> {
+    const users = Array.from(this.users.values());
+    if (users.length === 0) return undefined;
+    // Return most recently created user (excluding demo-user)
+    return users
+      .filter(u => u.id !== 'demo-user')
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
   }
 
   // User preferences

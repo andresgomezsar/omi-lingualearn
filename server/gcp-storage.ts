@@ -210,6 +210,39 @@ export async function getSignedUrl(gcpUri: string): Promise<string> {
 /**
  * Check if GCP storage is properly configured
  */
+/**
+ * Get compiled audio files for a user within a time range
+ * Used for finding audio files that correspond to a challenge response
+ */
+export async function getCompiledAudioInTimeRange(
+  userId: string,
+  startTime: Date,
+  endTime: Date
+): Promise<string[]> {
+  const storage = getStorage();
+  const bucket = storage.bucket(getBucketName());
+
+  const prefix = `${userId}/compiled/`;
+  const [files] = await bucket.getFiles({ prefix });
+
+  const startMs = startTime.getTime();
+  const endMs = endTime.getTime();
+
+  // Filter files by timestamp in filename (format: {startMs}_{endMs}.wav)
+  const relevantFiles = files.filter(file => {
+    const match = file.name.match(/(\d+)_(\d+)\.wav$/);
+    if (!match) return false;
+
+    const fileStartMs = parseInt(match[1]);
+    const fileEndMs = parseInt(match[2]);
+
+    // Check if file overlaps with our time range
+    return (fileStartMs <= endMs && fileEndMs >= startMs);
+  });
+
+  return relevantFiles.map(file => `gs://${getBucketName()}/${file.name}`);
+}
+
 export function isConfigured(): boolean {
   try {
     return !!process.env.GCP_SERVICE_ACCOUNT_JSON && !!process.env.GCP_BUCKET_NAME;

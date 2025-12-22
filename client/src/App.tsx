@@ -4,6 +4,8 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/lib/theme-provider";
+import { UserProvider } from "@/contexts/UserContext";
+import { AuthModal } from "@/components/AuthModal";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -79,10 +81,13 @@ function App() {
   return (
     <ThemeProvider defaultTheme="light" storageKey="linguaflow-theme">
       <QueryClientProvider client={queryClient}>
-        <TooltipProvider>
-          <Router />
-          <Toaster />
-        </TooltipProvider>
+        <UserProvider>
+          <TooltipProvider>
+            <AuthModal />
+            <Router />
+            <Toaster />
+          </TooltipProvider>
+        </UserProvider>
       </QueryClientProvider>
     </ThemeProvider>
   );

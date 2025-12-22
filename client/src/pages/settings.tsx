@@ -1,16 +1,18 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { 
-  Settings as SettingsIcon, 
+import {
+  Settings as SettingsIcon,
   Moon,
   Copy,
   Check,
   RefreshCw,
   User,
   AlertTriangle,
-  Database
+  Database,
+  LogOut
 } from "lucide-react";
+import { useUser } from "@/contexts/UserContext";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -47,6 +49,7 @@ interface UserProfile {
 export default function Settings() {
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
+  const { user, logout } = useUser();
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
   const { data: profile, isLoading } = useQuery<UserProfile>({
@@ -117,6 +120,14 @@ export default function Settings() {
     updatePreferencesMutation.mutate({ demoDataEnabled: checked });
   };
 
+  const handleLogout = () => {
+    logout();
+    toast({
+      title: "Logged out",
+      description: "You have been logged out successfully",
+    });
+  };
+
   return (
     <div className="p-6 space-y-6 max-w-2xl mx-auto">
       <motion.div
@@ -158,9 +169,9 @@ export default function Settings() {
                 User ID
               </Label>
               <div className="flex gap-2">
-                <Input 
+                <Input
                   id="user-id"
-                  value={profile?.omiUid || profile?.username || "demo-user"}
+                  value={user?.id || profile?.omiUid || profile?.username || "demo-user"}
                   readOnly
                   className="font-mono text-sm bg-muted/50"
                   data-testid="input-user-id"
@@ -168,7 +179,7 @@ export default function Settings() {
                 <Button
                   variant="outline"
                   size="icon"
-                  onClick={() => copyToClipboard(profile?.omiUid || profile?.username || "demo-user", "userId")}
+                  onClick={() => copyToClipboard(user?.id || profile?.omiUid || profile?.username || "demo-user", "userId")}
                   data-testid="button-copy-user-id"
                 >
                   {copiedField === "userId" ? (
@@ -179,11 +190,47 @@ export default function Settings() {
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                This is your unique identifier for syncing with Omi
+                This is your unique identifier. Keep it private - it acts as your authentication key.
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-4 pt-2">
+            <div className="space-y-3 pt-4">
+              <div className="space-y-2">
+                <Label htmlFor="native-language" className="text-sm text-muted-foreground">
+                  Native Language
+                </Label>
+                <Input
+                  id="native-language"
+                  value={profile?.nativeLanguage || "English"}
+                  onChange={(e) => {
+                    updatePreferencesMutation.mutate({
+                      nativeLanguage: e.target.value
+                    });
+                  }}
+                  placeholder="e.g., English"
+                  className="text-sm"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="target-language" className="text-sm text-muted-foreground">
+                  Learning Language
+                </Label>
+                <Input
+                  id="target-language"
+                  value={profile?.targetLanguage || "Spanish"}
+                  onChange={(e) => {
+                    updatePreferencesMutation.mutate({
+                      targetLanguage: e.target.value
+                    });
+                  }}
+                  placeholder="e.g., Spanish"
+                  className="text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 pt-4">
               <div className="text-center p-3 bg-muted/30 rounded-lg">
                 <p className="text-2xl font-bold text-foreground">{profile?.streak || 0}</p>
                 <p className="text-xs text-muted-foreground">Day Streak</p>
@@ -227,6 +274,21 @@ export default function Settings() {
                 disabled={updatePreferencesMutation.isPending}
                 data-testid="switch-demo-data"
               />
+            </div>
+
+            <Separator />
+
+            <div className="space-y-3">
+              <Label>Account Actions</Label>
+              <Button
+                variant="outline"
+                onClick={handleLogout}
+                className="w-full justify-start"
+                data-testid="button-logout"
+              >
+                <LogOut className="h-4 w-4 mr-2" />
+                Log Out
+              </Button>
             </div>
 
             <Separator />

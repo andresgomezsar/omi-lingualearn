@@ -11,6 +11,22 @@ const ai = new GoogleGenAI({
 
 const DEFAULT_USER_ID = "demo-user";
 
+/**
+ * Get user ID from request, with fallback to most recent user
+ * Supports userId in query params, body, or defaults to most recent non-demo user
+ */
+async function getUserIdFromRequest(req: Request): Promise<string> {
+  const userIdFromQuery = req.query.userId as string;
+  const userIdFromBody = req.body?.userId as string;
+
+  if (userIdFromQuery) return userIdFromQuery;
+  if (userIdFromBody) return userIdFromBody;
+
+  // Fallback to most recent user (excluding demo-user)
+  const recentUser = await storage.getMostRecentUser();
+  return recentUser?.id || DEFAULT_USER_ID;
+}
+
 // In-memory audio buffer for accumulating chunks per user+session
 // When buffer reaches ~1 minute of audio, compile to WAV and upload
 interface AudioBuffer {
@@ -694,7 +710,8 @@ export async function registerRoutes(
   // Get lessons for user
   app.get("/api/lessons", async (req: Request, res: Response) => {
     try {
-      const lessons = await storage.getLessons(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const lessons = await storage.getLessons(userId);
       res.json(lessons);
     } catch (error) {
       console.error("Error fetching lessons:", error);
@@ -713,9 +730,10 @@ export async function registerRoutes(
       }
 
       // Award XP
-      const user = await storage.getUser(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const user = await storage.getUser(userId);
       if (user) {
-        await storage.updateUserStats(DEFAULT_USER_ID, {
+        await storage.updateUserStats(userId, {
           totalXp: (user.totalXp || 0) + (lesson.xpReward || 50),
         });
       }
@@ -761,8 +779,9 @@ export async function registerRoutes(
 
       if (analysis.hasIssues) {
         // Save to learning queue
+        const userId = await getUserIdFromRequest(req);
         await storage.createLearningItem({
-          userId: DEFAULT_USER_ID,
+          userId,
           originalText: analysis.original!,
           correctedText: analysis.corrected!,
           explanation: analysis.explanation || "Language correction",
@@ -786,8 +805,9 @@ export async function registerRoutes(
   // Get learning status tool
   app.post("/api/omi/tools/status", async (req: Request, res: Response) => {
     try {
-      const stats = await storage.getOverviewStats(DEFAULT_USER_ID);
-      const user = await storage.getUser(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const stats = await storage.getOverviewStats(userId);
+      const user = await storage.getUser(userId);
 
       const result = `Here's your LinguaFlow status:\n\n` +
         `Streak: ${stats.streak} days\n` +
@@ -813,8 +833,9 @@ export async function registerRoutes(
         return res.json({ error: "Please provide both the original and corrected text" });
       }
 
+      const userId = await getUserIdFromRequest(req);
       await storage.createLearningItem({
-        userId: DEFAULT_USER_ID,
+        userId,
         originalText: original_text,
         correctedText: corrected_text,
         explanation: explanation || "Custom learning item",
@@ -833,7 +854,8 @@ export async function registerRoutes(
   // Get daily challenges tool
   app.post("/api/omi/tools/challenges", async (req: Request, res: Response) => {
     try {
-      const challenges = await storage.getDailyChallenges(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const challenges = await storage.getDailyChallenges(userId);
       const pending = challenges.filter(c => !c.completed);
 
       if (pending.length === 0) {
@@ -948,75 +970,8 @@ export async function registerRoutes(
 
           if (Array.isArray(segments) && segments.length > 0) {
             const userSegments = segments.filter((seg: { is_user?: boolean }) => seg.is_user === true);
-            
-            // Combine all user text to check for trigger phrases
-            const fullUserText = userSegments.map((seg: { text: string }) => seg.text).join(' ').toLowerCase();
-            
-            // Trigger phrase detection for Voice Coach Challenge
-            const triggerPhrases = ['lingua learn', 'lingualearn', 'voice coach', 'lingua challenge', 'start challenge'];
-            const hasTriggerPhrase = triggerPhrases.some(phrase => fullUserText.includes(phrase));
-            
-            if (hasTriggerPhrase) {
-              console.log(`Trigger phrase detected for user ${userId}: "${fullUserText.slice(0, 50)}..."`);
-              
-              // Check if there's already an active challenge
-              const activeChallenge = await storage.getActiveVoiceChallenge(userId);
-              
-              if (!activeChallenge) {
-                // Generate a new challenge
-                try {
-                  const { generateChallengePrompt } = await import("./gemini-challenge");
-                  
-                  // Get a random user fact
-                  let userFact = await storage.getRandomUserFact(userId);
-                  if (!userFact) {
-                    // Create default facts if none exist
-                    await storage.createUserFact({
-                      userId,
-                      content: "User enjoys daily conversations and wants to improve language skills",
-                      category: "goal",
-                    });
-                    userFact = await storage.getRandomUserFact(userId);
-                  }
-                  
-                  if (userFact) {
-                    const generated = await generateChallengePrompt(userFact, targetLanguage);
 
-                    const challenge = await storage.createVoiceChallenge({
-                      userId,
-                      status: "active",
-                      sourceFact: userFact.content,
-                      sourceFactId: userFact.id.toString(),
-                      prompt: generated.prompt,
-                      languageGoal: generated.languageGoal,
-                      targetLanguage,
-                      difficulty: generated.difficulty,
-                      xpEarned: 0,
-                      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-                    });
-                    
-                    console.log(`Generated new voice challenge ${challenge.id} for user ${userId}: "${generated.prompt.slice(0, 80)}..."`);
-                  }
-                } catch (error) {
-                  console.error("Error generating challenge from trigger:", error);
-                }
-              } else {
-                console.log(`User ${userId} already has active challenge ${activeChallenge.id}`);
-              }
-            } else {
-              // Check if user has an active challenge and this might be their response
-              const activeChallenge = await storage.getActiveVoiceChallenge(userId);
-              
-              if (activeChallenge && fullUserText.length > 30) {
-                // This looks like a challenge response - submit it!
-                console.log(`Detected potential challenge response for challenge ${activeChallenge.id}`);
-                
-                // Don't auto-submit from transcript - let the memory event handle full responses
-                // This avoids analyzing incomplete sentences
-              }
-            }
-            
-            // Store segments
+            // Store segments first
             for (const segment of userSegments) {
               await storage.createTranscriptSegment({
                 sessionId: session_id || `session-${Date.now()}`,
@@ -1030,25 +985,23 @@ export async function registerRoutes(
               });
             }
 
-            // Standard language analysis for learning items (only if not a challenge response)
-            if (!hasTriggerPhrase) {
-              for (const segment of userSegments) {
-                if (segment.text && segment.text.length > 15) {
-                  try {
-                    const analysis = await analyzeTextWithGemini(segment.text);
-                    if (analysis.hasIssues && analysis.original && analysis.corrected) {
-                      await storage.createLearningItem({
-                        userId,
-                        sessionId: session_id,
-                        originalText: analysis.original,
-                        correctedText: analysis.corrected,
-                        explanation: analysis.explanation || "Language correction",
-                        category: analysis.category || "grammar",
-                      });
-                    }
-                  } catch (analysisError) {
-                    console.error("Error analyzing segment:", analysisError);
+            // Analyze all user speech for language learning (no trigger phrase restrictions)
+            for (const segment of userSegments) {
+              if (segment.text && segment.text.length > 15) {
+                try {
+                  const analysis = await analyzeTextWithGemini(segment.text);
+                  if (analysis.hasIssues && analysis.original && analysis.corrected) {
+                    await storage.createLearningItem({
+                      userId,
+                      sessionId: session_id,
+                      originalText: analysis.original,
+                      correctedText: analysis.corrected,
+                      explanation: analysis.explanation || "Language correction",
+                      category: analysis.category || "grammar",
+                    });
                   }
+                } catch (analysisError) {
+                  console.error("Error analyzing segment:", analysisError);
                 }
               }
             }
@@ -1195,7 +1148,7 @@ export async function registerRoutes(
           if (Array.isArray(segments) && segments.length > 0) {
             // Check for active voice challenge first
             const activeChallenge = await storage.getActiveVoiceChallenge(userId);
-            
+
             if (activeChallenge) {
               // Collect user's speech as challenge response
               // Note: Omi memory events may not always have is_user field set,
@@ -1204,14 +1157,42 @@ export async function registerRoutes(
                 .filter((seg: { is_user?: boolean }) => seg.is_user === true || seg.is_user === undefined)
                 .map((seg: { text: string }) => seg.text)
                 .join(' ');
-              
+
               if (userSpeech.length > 30) {
                 console.log(`Auto-submitting challenge response for challenge ${activeChallenge.id}: "${userSpeech.slice(0, 100)}..."`);
-                
+
                 try {
                   const { analyzeChallengeResponse } = await import("./gemini-challenge");
-                  const feedback = await analyzeChallengeResponse(activeChallenge, userSpeech);
-                  
+
+                  // Find audio files for this response
+                  // Estimate response time: from now - (speech duration) to now
+                  // Speech duration ≈ 3 words per second (rough estimate)
+                  const wordCount = userSpeech.split(/\s+/).length;
+                  const estimatedDurationMs = (wordCount / 3) * 1000;
+                  const responseEndTime = new Date();
+                  const responseStartTime = new Date(responseEndTime.getTime() - Math.max(estimatedDurationMs, 60000)); // At least 60s back
+
+                  let audioUris: string[] = [];
+                  if (gcpStorage.isConfigured()) {
+                    try {
+                      audioUris = await gcpStorage.getCompiledAudioInTimeRange(
+                        userId,
+                        responseStartTime,
+                        responseEndTime
+                      );
+                      console.log(`Found ${audioUris.length} audio file(s) for challenge response`);
+                    } catch (audioError) {
+                      console.error("Error fetching audio files for challenge:", audioError);
+                    }
+                  }
+
+                  // Analyze with both transcript and audio
+                  const feedback = await analyzeChallengeResponse(
+                    activeChallenge,
+                    userSpeech,
+                    audioUris.length > 0 ? audioUris : undefined
+                  );
+
                   // Update challenge with response and feedback
                   const updatedChallenge = await storage.updateVoiceChallenge(activeChallenge.id, {
                     responseTranscript: userSpeech,
@@ -1226,9 +1207,9 @@ export async function registerRoutes(
                     status: 'completed',
                     completedAt: new Date()
                   });
-                  
+
                   console.log(`Challenge ${activeChallenge.id} completed with score ${feedback.overallScore}, XP earned: ${updatedChallenge.xpEarned}`);
-                  
+
                   // Skip normal analysis for this memory since it was a challenge response
                   return res.json({ status: "ok", challenge_completed: true, xp_earned: updatedChallenge.xpEarned });
                 } catch (error) {
@@ -1399,7 +1380,8 @@ export async function registerRoutes(
   // Check Omi connection status
   app.get("/api/omi/status", async (req: Request, res: Response) => {
     try {
-      const connection = await storage.getOmiConnection(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const connection = await storage.getOmiConnection(userId);
       res.json({
         connected: !!connection,
         connection: connection || null
@@ -1453,10 +1435,66 @@ export async function registerRoutes(
     }
   });
 
+  // List all users
+  app.get("/api/users", async (req: Request, res: Response) => {
+    try {
+      const users = await storage.getAllUsers();
+      res.json(users.map(u => ({
+        id: u.id,
+        username: u.username,
+        omiUid: u.omiUid,
+        targetLanguage: u.targetLanguage,
+        streak: u.streak,
+        totalXp: u.totalXp,
+        level: u.level,
+        createdAt: u.createdAt
+      })));
+    } catch (error) {
+      console.error("Error fetching users:", error);
+      res.status(500).json({ error: "Failed to fetch users" });
+    }
+  });
+
+  // Get current/most recent user
+  app.get("/api/users/current", async (req: Request, res: Response) => {
+    try {
+      const user = await storage.getMostRecentUser();
+      if (!user) {
+        // Fallback to demo user
+        const demoUser = await storage.getUser(DEFAULT_USER_ID);
+        if (!demoUser) {
+          return res.status(404).json({ error: "No users found" });
+        }
+        return res.json({
+          id: demoUser.id,
+          username: demoUser.username,
+          omiUid: demoUser.omiUid,
+          targetLanguage: demoUser.targetLanguage,
+          streak: demoUser.streak,
+          totalXp: demoUser.totalXp,
+          level: demoUser.level
+        });
+      }
+
+      res.json({
+        id: user.id,
+        username: user.username,
+        omiUid: user.omiUid,
+        targetLanguage: user.targetLanguage,
+        streak: user.streak,
+        totalXp: user.totalXp,
+        level: user.level
+      });
+    } catch (error) {
+      console.error("Error fetching current user:", error);
+      res.status(500).json({ error: "Failed to fetch current user" });
+    }
+  });
+
   // Get current user profile
   app.get("/api/user/profile", async (req: Request, res: Response) => {
     try {
-      const userId = (req.query.userId as string) || DEFAULT_USER_ID;
+      const userId = await getUserIdFromRequest(req);
       const user = await storage.getUser(userId);
       
       if (!user) {
@@ -1483,7 +1521,7 @@ export async function registerRoutes(
   // Update user preferences
   app.patch("/api/user/preferences", async (req: Request, res: Response) => {
     try {
-      const userId = (req.body.userId as string) || DEFAULT_USER_ID;
+      const userId = await getUserIdFromRequest(req);
       const { demoDataEnabled, nativeLanguage, targetLanguage } = req.body;
       
       const user = await storage.updateUserPreferences(userId, {
@@ -1506,7 +1544,7 @@ export async function registerRoutes(
   // Reset all user data
   app.post("/api/user/reset", async (req: Request, res: Response) => {
     try {
-      const userId = (req.body.userId as string) || DEFAULT_USER_ID;
+      const userId = await getUserIdFromRequest(req);
       
       await storage.resetUserData(userId);
       
@@ -1534,7 +1572,7 @@ export async function registerRoutes(
   // Get chat messages
   app.get("/api/chat/messages", async (req: Request, res: Response) => {
     try {
-      const userId = (req.query.userId as string) || DEFAULT_USER_ID;
+      const userId = await getUserIdFromRequest(req);
       const challengeId = req.query.challengeId ? parseInt(req.query.challengeId as string) : undefined;
       
       const messages = await storage.getChatMessages(userId, challengeId);
@@ -1548,7 +1586,7 @@ export async function registerRoutes(
   // Send chat message and get Gemini response
   app.post("/api/chat/send", async (req: Request, res: Response) => {
     try {
-      const userId = (req.body.userId as string) || DEFAULT_USER_ID;
+      const userId = await getUserIdFromRequest(req);
       const { message, challengeId } = req.body;
 
       if (!message || typeof message !== 'string') {
@@ -1624,7 +1662,7 @@ ${contextPrompt}`;
   // Clear chat history
   app.delete("/api/chat/clear", async (req: Request, res: Response) => {
     try {
-      const userId = (req.query.userId as string) || DEFAULT_USER_ID;
+      const userId = await getUserIdFromRequest(req);
       await storage.clearChatMessages(userId);
       res.json({ success: true });
     } catch (error) {
@@ -1639,7 +1677,8 @@ ${contextPrompt}`;
 
   app.get("/api/stats/overview", async (req: Request, res: Response) => {
     try {
-      const stats = await storage.getOverviewStats(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const stats = await storage.getOverviewStats(userId);
       res.json(stats);
     } catch (error) {
       console.error("Error fetching overview stats:", error);
@@ -1649,7 +1688,8 @@ ${contextPrompt}`;
 
   app.get("/api/stats/weekly", async (req: Request, res: Response) => {
     try {
-      const stats = await storage.getWeeklyStats(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const stats = await storage.getWeeklyStats(userId);
       res.json(stats);
     } catch (error) {
       console.error("Error fetching weekly stats:", error);
@@ -1659,7 +1699,8 @@ ${contextPrompt}`;
 
   app.get("/api/stats/progress", async (req: Request, res: Response) => {
     try {
-      const stats = await storage.getProgressStats(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const stats = await storage.getProgressStats(userId);
       res.json(stats);
     } catch (error) {
       console.error("Error fetching progress stats:", error);
@@ -1669,7 +1710,8 @@ ${contextPrompt}`;
 
   app.get("/api/challenges/today", async (req: Request, res: Response) => {
     try {
-      const challenges = await storage.getDailyChallenges(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const challenges = await storage.getDailyChallenges(userId);
       res.json(challenges);
     } catch (error) {
       console.error("Error fetching daily challenges:", error);
@@ -1687,9 +1729,10 @@ ${contextPrompt}`;
         return res.status(404).json({ error: "Challenge not found" });
       }
 
-      const user = await storage.getUser(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const user = await storage.getUser(userId);
       if (user) {
-        await storage.updateUserStats(DEFAULT_USER_ID, {
+        await storage.updateUserStats(userId, {
           totalXp: (user.totalXp || 0) + (challenge.xpEarned || 25),
         });
       }
@@ -1703,7 +1746,8 @@ ${contextPrompt}`;
 
   app.get("/api/learning-items", async (req: Request, res: Response) => {
     try {
-      const items = await storage.getLearningItems(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const items = await storage.getLearningItems(userId);
       res.json(items);
     } catch (error) {
       console.error("Error fetching learning items:", error);
@@ -1713,8 +1757,9 @@ ${contextPrompt}`;
 
   app.post("/api/learning-items", async (req: Request, res: Response) => {
     try {
+      const userId = await getUserIdFromRequest(req);
       const item = await storage.createLearningItem({
-        userId: DEFAULT_USER_ID,
+        userId,
         ...req.body,
       });
       res.status(201).json(item);
@@ -1726,7 +1771,8 @@ ${contextPrompt}`;
 
   app.get("/api/achievements", async (req: Request, res: Response) => {
     try {
-      const achievements = await storage.getAchievements(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const achievements = await storage.getAchievements(userId);
       res.json(achievements);
     } catch (error) {
       console.error("Error fetching achievements:", error);
@@ -1757,7 +1803,8 @@ ${contextPrompt}`;
   // Get active voice challenge for current user
   app.get("/api/voice-challenges/active", async (req: Request, res: Response) => {
     try {
-      const challenge = await storage.getActiveVoiceChallenge(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const challenge = await storage.getActiveVoiceChallenge(userId);
       res.json(challenge || null);
     } catch (error) {
       console.error("Error fetching active challenge:", error);
@@ -1768,7 +1815,8 @@ ${contextPrompt}`;
   // Get all voice challenges for current user
   app.get("/api/voice-challenges", async (req: Request, res: Response) => {
     try {
-      const challenges = await storage.getVoiceChallenges(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const challenges = await storage.getVoiceChallenges(userId);
       res.json(challenges);
     } catch (error) {
       console.error("Error fetching challenges:", error);
@@ -1795,14 +1843,15 @@ ${contextPrompt}`;
   app.post("/api/voice-challenges/generate", async (req: Request, res: Response) => {
     try {
       const { generateChallengePrompt } = await import("./gemini-challenge");
-      
+      const userId = await getUserIdFromRequest(req);
+
       // Check user's demo data preference
-      const user = await storage.getUser(DEFAULT_USER_ID);
+      const user = await storage.getUser(userId);
       const demoDataEnabled = user?.demoDataEnabled ?? true; // Default to true for backward compatibility
-      
+
       // Get a random user fact (or use provided one)
-      let userFact = await storage.getRandomUserFact(DEFAULT_USER_ID);
-      
+      let userFact = await storage.getRandomUserFact(userId);
+
       // Only create demo facts if demo mode is enabled
       if (!userFact && demoDataEnabled) {
         const demoFacts = [
@@ -1812,15 +1861,15 @@ ${contextPrompt}`;
           { content: "User works in software development", category: "work" },
           { content: "User has a golden retriever named Max", category: "personal" },
         ];
-        
+
         for (const fact of demoFacts) {
           await storage.createUserFact({
-            userId: DEFAULT_USER_ID,
+            userId,
             content: fact.content,
             category: fact.category,
           });
         }
-        userFact = await storage.getRandomUserFact(DEFAULT_USER_ID);
+        userFact = await storage.getRandomUserFact(userId);
       }
 
       if (!userFact) {
@@ -1828,20 +1877,20 @@ ${contextPrompt}`;
         if (demoDataEnabled) {
           return res.status(500).json({ error: "Failed to get user fact" });
         } else {
-          return res.status(400).json({ 
-            error: "No Omi memories found", 
-            message: "Connect your Omi device and say 'lingua learn' to create memories, or enable Demo Mode in Settings." 
+          return res.status(400).json({
+            error: "No Omi memories found",
+            message: "Connect your Omi device and say 'lingua learn' to create memories, or enable Demo Mode in Settings."
           });
         }
       }
 
       // Generate challenge prompt using Gemini
-      const targetLanguage = req.body.targetLanguage || "Spanish";
+      const targetLanguage = req.body.targetLanguage || user?.targetLanguage || "Spanish";
       const generated = await generateChallengePrompt(userFact, targetLanguage);
 
       // Create the challenge
       const challenge = await storage.createVoiceChallenge({
-        userId: DEFAULT_USER_ID,
+        userId,
         status: "active",
         sourceFact: userFact.content,
         sourceFactId: userFact.id.toString(),
@@ -1890,9 +1939,10 @@ ${contextPrompt}`;
 
       // Create learning items from corrections
       if (feedback.corrections && feedback.corrections.length > 0) {
+        const userId = await getUserIdFromRequest(req);
         for (const correction of feedback.corrections) {
           await storage.createLearningItem({
-            userId: DEFAULT_USER_ID,
+            userId,
             originalText: correction.original,
             correctedText: correction.corrected,
             explanation: correction.explanation,
@@ -1903,9 +1953,10 @@ ${contextPrompt}`;
 
       // Update user XP
       if (completed?.xpEarned) {
-        const user = await storage.getUser(DEFAULT_USER_ID);
+        const userId = await getUserIdFromRequest(req);
+        const user = await storage.getUser(userId);
         if (user) {
-          await storage.updateUserStats(DEFAULT_USER_ID, {
+          await storage.updateUserStats(userId, {
             totalXp: (user.totalXp || 0) + completed.xpEarned,
           });
         }
@@ -1933,8 +1984,9 @@ ${contextPrompt}`;
       }
 
       // Get a different fact (avoid the one just used)
-      const facts = await storage.getUserFacts(DEFAULT_USER_ID);
-      const availableFacts = facts.filter(f => 
+      const userId = await getUserIdFromRequest(req);
+      const facts = await storage.getUserFacts(userId);
+      const availableFacts = facts.filter(f =>
         !existingChallenge?.sourceFactId || f.id.toString() !== existingChallenge.sourceFactId
       );
 
@@ -1946,12 +1998,13 @@ ${contextPrompt}`;
       const userFact = availableFacts[Math.floor(Math.random() * availableFacts.length)];
 
       // Generate new challenge
+      const user = await storage.getUser(userId);
       const { generateChallengePrompt } = await import("./gemini-challenge");
-      const targetLanguage = req.body.targetLanguage || "Spanish";
+      const targetLanguage = req.body.targetLanguage || user?.targetLanguage || "Spanish";
       const generated = await generateChallengePrompt(userFact, targetLanguage);
 
       const challenge = await storage.createVoiceChallenge({
-        userId: DEFAULT_USER_ID,
+        userId,
         status: "active",
         sourceFact: userFact.content,
         sourceFactId: userFact.id.toString(),
@@ -1978,7 +2031,8 @@ ${contextPrompt}`;
   // Get all user facts
   app.get("/api/user-facts", async (req: Request, res: Response) => {
     try {
-      const facts = await storage.getUserFacts(DEFAULT_USER_ID);
+      const userId = await getUserIdFromRequest(req);
+      const facts = await storage.getUserFacts(userId);
       res.json(facts);
     } catch (error) {
       console.error("Error fetching user facts:", error);
@@ -1989,13 +2043,14 @@ ${contextPrompt}`;
   // Add a user fact manually
   app.post("/api/user-facts", async (req: Request, res: Response) => {
     try {
+      const userId = await getUserIdFromRequest(req);
       const { content, category } = req.body;
       if (!content) {
         return res.status(400).json({ error: "Content is required" });
       }
 
       const fact = await storage.createUserFact({
-        userId: DEFAULT_USER_ID,
+        userId,
         content,
         category: category || "general",
       });
@@ -2010,9 +2065,10 @@ ${contextPrompt}`;
   // Sync facts from Omi API (placeholder - requires Omi API key)
   app.post("/api/user-facts/sync-omi", async (req: Request, res: Response) => {
     try {
+      const userId = await getUserIdFromRequest(req);
       // For now, add some demo facts if none exist
-      const existingFacts = await storage.getUserFacts(DEFAULT_USER_ID);
-      
+      const existingFacts = await storage.getUserFacts(userId);
+
       if (existingFacts.length === 0) {
         const demoFacts = [
           { content: "User enjoys traveling and has visited 5 countries", category: "hobby" },
@@ -2024,14 +2080,14 @@ ${contextPrompt}`;
 
         for (const fact of demoFacts) {
           await storage.createUserFact({
-            userId: DEFAULT_USER_ID,
+            userId,
             content: fact.content,
             category: fact.category,
           });
         }
       }
 
-      const facts = await storage.getUserFacts(DEFAULT_USER_ID);
+      const facts = await storage.getUserFacts(userId);
       res.json({ synced: facts.length, facts });
     } catch (error) {
       console.error("Error syncing facts from Omi:", error);
@@ -2042,7 +2098,7 @@ ${contextPrompt}`;
   return httpServer;
 }
 
-async function analyzeTextWithGemini(text: string, targetLanguage?: string): Promise<{
+async function analyzeTextWithGemini(text: string, targetLanguage?: string, nativeLanguage?: string): Promise<{
   hasIssues: boolean;
   original?: string;
   corrected?: string;
@@ -2050,19 +2106,29 @@ async function analyzeTextWithGemini(text: string, targetLanguage?: string): Pro
   category?: string;
 }> {
   try {
-    const lang = targetLanguage || "English";
-    const prompt = `You are a language learning assistant. Analyze the following ${lang} text for grammar, vocabulary, or pronunciation issues.
+    const lang = targetLanguage || "Spanish";
+    const native = nativeLanguage || "English";
+    const prompt = `You are a native ${lang} speaker helping a ${native} speaker learn ${lang}.
 
-If there are issues, respond in JSON format with:
-- hasIssues: true
-- original: the problematic phrase (the part that needs fixing)
-- corrected: the corrected version
-- explanation: brief, friendly explanation of the error (1-2 sentences)
-- category: "grammar", "vocabulary", or "pronunciation"
+Analyze this ${lang} text: "${text}"
 
-If the text is correct, respond with: {"hasIssues": false}
+Focus on IDIOMATIC NATURALNESS:
+- Does this sound like a native speaker or like a textbook/translation?
+- Are there more natural, idiomatic ways to express this?
+- Is the phrasing culturally appropriate?
 
-Text to analyze: "${text}"
+If there are issues or better idiomatic alternatives, respond with:
+{
+  "hasIssues": true,
+  "original": "the phrase that could be more natural",
+  "corrected": "the idiomatic native way to say it",
+  "explanation": "why natives say it this way (1-2 sentences)",
+  "category": "idiomatic" or "grammar" or "vocabulary"
+}
+
+If the text sounds natural and idiomatic, respond with: {"hasIssues": false}
+
+Prioritize naturalness over correctness. Textbook-correct but unnatural phrases should be flagged.
 
 Respond ONLY with valid JSON, no other text or markdown.`;
 
