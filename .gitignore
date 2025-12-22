@@ -4,3 +4,10 @@ dist
 server/public
 vite.config.ts.*
 *.tar.gz
+.local
+.env
+.env.*
+*.pem
+*.key
+*credentials*.json
+!package*.json
