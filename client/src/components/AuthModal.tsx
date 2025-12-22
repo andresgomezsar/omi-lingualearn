@@ -55,7 +55,7 @@ export function AuthModal() {
                 Welcome to LinguaLearn
               </DialogTitle>
               <DialogDescription className="mt-1">
-                Enter your User ID or Omi UID to access your account
+                Get your UID from the Omi app to continue
               </DialogDescription>
             </div>
           </div>
@@ -63,20 +63,25 @@ export function AuthModal() {
 
         <form onSubmit={handleSubmit} className="space-y-4 mt-4">
           <div className="space-y-2">
-            <Label htmlFor="user-id">User ID / Omi UID</Label>
+            <Label htmlFor="user-id">Omi User ID</Label>
             <Input
               id="user-id"
               type="text"
-              placeholder="d0a4e344-c930-46ad-9949-7811603f6fe9"
+              placeholder="Paste your UID from Omi app"
               value={userInput}
               onChange={(e) => setUserInput(e.target.value)}
               disabled={isLoading || showSuccess}
               className="font-mono text-sm"
               autoFocus
             />
-            <p className="text-xs text-muted-foreground">
-              This is your unique identifier from your Omi device or LinguaLearn account
-            </p>
+            <div className="text-xs text-muted-foreground space-y-1">
+              <p className="font-medium">To find your UID:</p>
+              <ol className="list-decimal list-inside space-y-0.5 ml-1">
+                <li>Open the Omi app on your phone</li>
+                <li>Go to Settings → Profile → User ID</li>
+                <li>Copy your User ID and paste it here</li>
+              </ol>
+            </div>
           </div>
 
           <AnimatePresence mode="wait">
@@ -130,7 +135,7 @@ export function AuthModal() {
 
           <div className="pt-4 border-t">
             <p className="text-xs text-muted-foreground text-center">
-              Your User ID is stored securely in your browser and acts as your authentication key.
+              Your Omi UID is stored securely in your browser and acts as your authentication key.
               Keep it private and don't share it with others.
             </p>
           </div>

@@ -1518,11 +1518,10 @@ export async function registerRoutes(
           });
           user = await storage.updateUserOmiUid(newUser.id, userIdOrOmiUid);
         } else {
-          // Treat as User ID - create user with that specific ID
-          // This handles the case where someone has a UUID but no user record yet
+          // Invalid format - must be a valid Omi UID
           return res.status(404).json({
-            error: "User not found",
-            message: "Please use your Omi UID to create an account, or contact support if you have a User ID but no account."
+            error: "Invalid User ID",
+            message: "Please use your Omi UID from the Omi app (Settings → Profile → User ID). User IDs must be at least 20 characters long."
           });
         }
       }

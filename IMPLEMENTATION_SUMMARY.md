@@ -201,13 +201,17 @@ Language goal: natural idiomatic expressions
 
 ### For End Users:
 
-1. **Open app** → See auth modal
-2. **Paste User ID** (from Omi settings or email)
-3. **Set languages** in Settings:
+1. **Get your Omi UID**:
+   - Open the Omi app on your phone
+   - Go to **Settings → Profile → User ID**
+   - Copy your User ID
+2. **Open LinguaLearn app** → See auth modal
+3. **Paste your Omi UID** from the previous step
+4. **Set languages** in Settings:
    - Native Language: "English"
    - Learning Language: "Spanish"
-4. **Speak naturally** - No trigger phrases needed!
-5. **Get idiomatic feedback** focused on sounding native
+5. **Speak naturally** - No trigger phrases needed!
+6. **Get idiomatic feedback** focused on sounding native
 
 ### For Challenges:
 

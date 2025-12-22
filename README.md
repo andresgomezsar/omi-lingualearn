@@ -129,6 +129,31 @@ npm run dev
 
 The application will be available at `http://localhost:5000`
 
+## Getting Started for Users
+
+Once the app is running, here's how to get started:
+
+1. **Get your Omi User ID**:
+   - Open the **Omi app** on your phone
+   - Navigate to **Settings → Profile → User ID**
+   - Copy your User ID (a long alphanumeric string)
+
+2. **Login to LinguaLearn**:
+   - Open the LinguaLearn app in your browser
+   - When the authentication modal appears, paste your Omi User ID
+   - Click "Continue" to create your account
+
+3. **Set Your Languages**:
+   - Go to Settings in the app
+   - Enter your **Native Language** (e.g., "English")
+   - Enter your **Learning Language** (e.g., "Spanish")
+
+4. **Start Learning**:
+   - Speak naturally with your Omi device
+   - Complete voice challenges for personalized practice
+   - Get real-time feedback on pronunciation and idiomatic expressions
+   - No trigger phrases needed - just speak!
+
 ## Configuration
 
 Create a `.env` file in the root directory with the following variables:
