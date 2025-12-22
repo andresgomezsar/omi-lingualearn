@@ -78,6 +78,101 @@ function getBaseUrl(req: Request): string {
   return `${protocol}://${host}`;
 }
 
+/**
+ * Get or create user from Omi UID
+ * Automatically creates a new user if one doesn't exist with this UID
+ */
+async function getUserFromOmiUid(omiUid: string): Promise<{ id: string; targetLanguage: string }> {
+  if (!omiUid || omiUid.length < 3) {
+    throw new Error("Invalid Omi UID");
+  }
+
+  let user = await storage.getUserByOmiUid(omiUid);
+
+  if (!user) {
+    console.log(`Creating new user for Omi UID: ${omiUid}`);
+    // Auto-create user on first interaction
+    const newUser = await storage.createUser({
+      username: `omi_${omiUid.slice(0, 8)}_${Date.now()}`,
+      password: omiUid, // Use UID as password for simplicity
+    });
+    user = await storage.updateUserOmiUid(newUser.id, omiUid);
+  }
+
+  return {
+    id: user!.id,
+    targetLanguage: user!.targetLanguage || "Spanish"
+  };
+}
+
+/**
+ * Extract user facts from Omi memory structured data
+ */
+function extractFactsFromMemory(memory: any): Array<{ category: string; content: string }> {
+  const facts: Array<{ category: string; content: string }> = [];
+
+  if (!memory) return facts;
+
+  // Extract from structured field
+  const structured = memory.structured;
+  if (structured) {
+    // Title usually contains a concise fact
+    if (structured.title && structured.title.length > 10) {
+      facts.push({
+        category: structured.category || structured.emoji || 'general',
+        content: structured.title,
+      });
+    }
+
+    // Overview contains more detailed information
+    if (structured.overview && structured.overview.length > 20 && structured.overview !== structured.title) {
+      facts.push({
+        category: structured.category || structured.emoji || 'general',
+        content: structured.overview,
+      });
+    }
+
+    // Action items might be useful
+    if (structured.action_items && Array.isArray(structured.action_items)) {
+      for (const item of structured.action_items) {
+        if (typeof item === 'string' && item.length > 10) {
+          facts.push({
+            category: 'action',
+            content: item,
+          });
+        }
+      }
+    }
+  }
+
+  // Extract from geolocation context
+  if (memory.geolocation?.address && memory.geolocation.address.length > 5) {
+    facts.push({
+      category: 'location',
+      content: `User was at ${memory.geolocation.address}`,
+    });
+  }
+
+  // Extract from transcript if structured is empty
+  if (facts.length === 0 && memory.transcript_segments && Array.isArray(memory.transcript_segments)) {
+    const userText = memory.transcript_segments
+      .filter((seg: any) => seg.is_user)
+      .map((seg: any) => seg.text)
+      .join(' ')
+      .trim();
+
+    if (userText.length > 30) {
+      // Use the conversation as a fact if it's substantial
+      facts.push({
+        category: 'conversation',
+        content: userText.slice(0, 500), // Limit length
+      });
+    }
+  }
+
+  return facts;
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -200,15 +295,20 @@ export async function registerRoutes(
         return res.status(400).json({ status: "error", message: "Missing uid" });
       }
       
-      console.log(`Omi setup completed for user: ${uid}`);
-      
+      console.log(`Omi setup completed for UID: ${uid}`);
+
+      // Get or create user from Omi UID
+      const user = await getUserFromOmiUid(uid);
+
       // Store the Omi connection
       await storage.createOmiConnection({
         omiUid: uid,
-        userId: DEFAULT_USER_ID,
+        userId: user.id,
         appId: req.body?.app_id,
         status: "connected"
       });
+
+      console.log(`Created connection for user ${user.id}`);
 
       res.json({ status: "ok" });
     } catch (error) {
@@ -225,22 +325,30 @@ export async function registerRoutes(
       const session_id = req.query.session_id as string;
       const uid = req.query.uid as string;
       const segments = req.body; // Array of segments directly in body
-      
+
+      if (!uid) {
+        return res.status(400).json({ status: "error", message: "Missing uid parameter" });
+      }
+
       console.log(`Received transcript from Omi. UID: ${uid}, Session: ${session_id}, Segments: ${Array.isArray(segments) ? segments.length : 0}`);
+
+      // Get or create user from Omi UID
+      const user = await getUserFromOmiUid(uid);
+      const userId = user.id;
 
       if (Array.isArray(segments) && segments.length > 0) {
         // Filter for user speech only
         const userSegments = segments.filter((seg: { is_user?: boolean }) => seg.is_user === true);
-        
+
         for (const segment of userSegments) {
           if (segment.text && segment.text.length > 15) {
             try {
               const analysis = await analyzeTextWithGemini(segment.text);
-              
+
               if (analysis.hasIssues && analysis.original && analysis.corrected) {
                 // Create learning item from mistake
                 const item = await storage.createLearningItem({
-                  userId: DEFAULT_USER_ID,
+                  userId,
                   sessionId: session_id,
                   originalText: analysis.original,
                   correctedText: analysis.corrected,
@@ -250,13 +358,13 @@ export async function registerRoutes(
 
                 // Create a challenge for this item
                 await storage.createDailyChallenge({
-                  userId: DEFAULT_USER_ID,
+                  userId,
                   learningItemId: item.id,
                   challengeText: `Practice: ${analysis.corrected}`,
                   xpEarned: 25,
                 });
 
-                console.log(`Created learning item: ${analysis.original} -> ${analysis.corrected}`);
+                console.log(`Created learning item for user ${userId}: ${analysis.original} -> ${analysis.corrected}`);
               }
             } catch (analysisError) {
               console.error("Error analyzing segment:", analysisError);
@@ -279,10 +387,39 @@ export async function registerRoutes(
     try {
       const uid = req.query.uid as string;
       const memory = req.body;
-      
+
+      if (!uid) {
+        return res.status(400).json({ status: "error", message: "Missing uid parameter" });
+      }
+
       console.log(`Received memory from Omi. UID: ${uid}, Memory ID: ${memory?.id}`);
 
-      // Process transcript segments from the memory
+      // Get or create user from Omi UID
+      const user = await getUserFromOmiUid(uid);
+      const userId = user.id;
+
+      console.log(`Processing memory for user ${userId}`);
+
+      // Extract and store user facts from structured data
+      const facts = extractFactsFromMemory(memory);
+      if (facts.length > 0) {
+        console.log(`Extracted ${facts.length} facts from memory ${memory?.id}`);
+        for (const fact of facts) {
+          try {
+            await storage.createUserFact({
+              userId,
+              omiFactId: memory?.id,
+              category: fact.category,
+              content: fact.content,
+            });
+            console.log(`Stored fact: [${fact.category}] ${fact.content.slice(0, 50)}...`);
+          } catch (error) {
+            console.error("Error storing fact:", error);
+          }
+        }
+      }
+
+      // Process transcript segments for learning items
       const segments = memory?.transcript_segments;
       if (Array.isArray(segments) && segments.length > 0) {
         // Combine all user segments into a transcript
@@ -290,14 +427,15 @@ export async function registerRoutes(
           .filter((seg: { is_user?: boolean }) => seg.is_user === true)
           .map((seg: { text: string }) => seg.text)
           .join(' ');
-        
+
         if (userText.length > 20) {
           const analysis = await analyzeConversationWithGemini(userText);
-          
+
           if (analysis.issues && analysis.issues.length > 0) {
+            console.log(`Found ${analysis.issues.length} learning items for user ${userId}`);
             for (const issue of analysis.issues) {
               await storage.createLearningItem({
-                userId: DEFAULT_USER_ID,
+                userId,
                 sessionId: memory?.id,
                 originalText: issue.original,
                 correctedText: issue.corrected,
@@ -324,20 +462,28 @@ export async function registerRoutes(
       const uid = req.query.uid as string;
       const sampleRate = parseInt(req.query.sample_rate as string) || 16000;
       const sessionId = req.query.session_id as string || `audio-${Date.now()}`;
-      
+
+      if (!uid) {
+        return res.status(400).json({ status: "error", message: "Missing uid parameter" });
+      }
+
+      // Get or create user from Omi UID
+      const user = await getUserFromOmiUid(uid);
+      const userId = user.id;
+
       // Get raw audio buffer from request body
       const chunks: Buffer[] = [];
       req.on('data', (chunk: Buffer) => chunks.push(chunk));
       req.on('end', async () => {
         try {
           const audioBuffer = Buffer.concat(chunks);
-          
+
           if (audioBuffer.length === 0) {
             console.log(`Received empty audio chunk from UID: ${uid}`);
             return res.json({ status: "ok" });
           }
 
-          console.log(`Received audio bytes from Omi. UID: ${uid}, Session: ${sessionId}, Size: ${audioBuffer.length} bytes, Sample Rate: ${sampleRate}`);
+          console.log(`Received audio bytes from Omi. UID: ${uid}, User: ${userId}, Session: ${sessionId}, Size: ${audioBuffer.length} bytes, Sample Rate: ${sampleRate}`);
 
           // Check if GCP is configured
           if (!gcpStorage.isConfigured()) {
@@ -357,7 +503,7 @@ export async function registerRoutes(
 
           // Upload to GCP bucket
           const gcpUri = await gcpStorage.uploadAudioChunk(
-            uid || DEFAULT_USER_ID,
+            userId,
             sessionId,
             audioBuffer,
             timestamp,
@@ -367,7 +513,7 @@ export async function registerRoutes(
           // Store chunk metadata
           await storage.createAudioChunk({
             sessionId,
-            userId: uid || DEFAULT_USER_ID,
+            userId,
             gcpUri,
             startMs: chunkIndex > 0 ? existingChunks[chunkIndex - 1]?.endMs || 0 : 0,
             endMs: (chunkIndex > 0 ? existingChunks[chunkIndex - 1]?.endMs || 0 : 0) + durationMs,
@@ -376,7 +522,7 @@ export async function registerRoutes(
             chunkIndex,
           });
 
-          console.log(`Stored audio chunk ${chunkIndex} for session ${sessionId}: ${gcpUri}`);
+          console.log(`Stored audio chunk ${chunkIndex} for user ${userId}, session ${sessionId}: ${gcpUri}`);
           res.json({ status: "ok" });
         } catch (uploadError) {
           console.error("Error uploading audio:", uploadError);
@@ -789,8 +935,16 @@ export async function registerRoutes(
         case "transcript": {
           // Handle real-time transcript
           const segments = req.body;
-          const userId = uid || DEFAULT_USER_ID;
-          console.log(`Processing transcript: ${Array.isArray(segments) ? segments.length : 0} segments`);
+
+          if (!uid) {
+            return res.status(400).json({ status: "error", message: "Missing uid parameter" });
+          }
+
+          const user = await getUserFromOmiUid(uid);
+          const userId = user.id;
+          const targetLanguage = user.targetLanguage;
+
+          console.log(`Processing transcript for user ${userId}: ${Array.isArray(segments) ? segments.length : 0} segments`);
 
           if (Array.isArray(segments) && segments.length > 0) {
             const userSegments = segments.filter((seg: { is_user?: boolean }) => seg.is_user === true);
@@ -826,8 +980,8 @@ export async function registerRoutes(
                   }
                   
                   if (userFact) {
-                    const generated = await generateChallengePrompt(userFact, "Spanish");
-                    
+                    const generated = await generateChallengePrompt(userFact, targetLanguage);
+
                     const challenge = await storage.createVoiceChallenge({
                       userId,
                       status: "active",
@@ -835,7 +989,7 @@ export async function registerRoutes(
                       sourceFactId: userFact.id.toString(),
                       prompt: generated.prompt,
                       languageGoal: generated.languageGoal,
-                      targetLanguage: "Spanish",
+                      targetLanguage,
                       difficulty: generated.difficulty,
                       xpEarned: 0,
                       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
@@ -905,7 +1059,13 @@ export async function registerRoutes(
         case "audio": {
           // Handle audio bytes - accumulate and compile ~1 minute WAV files
           const sampleRate = parseInt(req.query.sample_rate as string) || 16000;
-          const userId = uid || DEFAULT_USER_ID;
+
+          if (!uid) {
+            return res.status(400).json({ status: "error", message: "Missing uid parameter" });
+          }
+
+          const user = await getUserFromOmiUid(uid);
+          const userId = user.id;
           const sessionId = session_id || "default";
           const bufferKey = `${userId}:${sessionId}`;
           
@@ -1003,8 +1163,35 @@ export async function registerRoutes(
           // Handle memory trigger (conversation end)
           const memory = req.body;
           const segments = memory?.transcript_segments;
-          const userId = uid || DEFAULT_USER_ID;
-          
+
+          if (!uid) {
+            return res.status(400).json({ status: "error", message: "Missing uid parameter" });
+          }
+
+          const user = await getUserFromOmiUid(uid);
+          const userId = user.id;
+
+          console.log(`Processing memory for user ${userId}, memory ID: ${memory?.id}`);
+
+          // Extract and store user facts from structured data
+          const facts = extractFactsFromMemory(memory);
+          if (facts.length > 0) {
+            console.log(`Extracted ${facts.length} facts from memory ${memory?.id}`);
+            for (const fact of facts) {
+              try {
+                await storage.createUserFact({
+                  userId,
+                  omiFactId: memory?.id,
+                  category: fact.category,
+                  content: fact.content,
+                });
+                console.log(`Stored fact: [${fact.category}] ${fact.content.slice(0, 50)}...`);
+              } catch (error) {
+                console.error("Error storing fact:", error);
+              }
+            }
+          }
+
           if (Array.isArray(segments) && segments.length > 0) {
             // Check for active voice challenge first
             const activeChallenge = await storage.getActiveVoiceChallenge(userId);
@@ -1131,14 +1318,19 @@ export async function registerRoutes(
           if (!omiUid) {
             return res.status(400).json({ status: "error", message: "Missing uid" });
           }
-          
+
+          // Get or create user from Omi UID
+          const user = await getUserFromOmiUid(omiUid);
+
           await storage.createOmiConnection({
             omiUid,
-            userId: DEFAULT_USER_ID,
+            userId: user.id,
             appId: req.body?.app_id,
             status: "connected"
           });
-          
+
+          console.log(`Setup complete for user ${user.id}, UID: ${omiUid}`);
+
           return res.json({ status: "ok" });
         }
 
