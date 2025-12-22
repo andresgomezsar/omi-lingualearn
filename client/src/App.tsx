@@ -4,7 +4,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/lib/theme-provider";
-import { UserProvider } from "@/contexts/UserContext";
+import { UserProvider, useUser } from "@/contexts/UserContext";
 import { AuthModal } from "@/components/AuthModal";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
@@ -21,6 +21,8 @@ import Settings from "@/pages/settings";
 import Chat from "@/pages/chat";
 
 function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const { user } = useUser();
+
   const style = {
     "--sidebar-width": "18rem",
     "--sidebar-width-icon": "4rem",
@@ -29,7 +31,11 @@ function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
     <SidebarProvider style={style as React.CSSProperties}>
       <div className="flex h-screen w-full">
-        <AppSidebar streak={7} xp={1250} level={3} />
+        <AppSidebar
+          streak={user?.streak ?? 0}
+          xp={user?.totalXp ?? 0}
+          level={user?.level ?? 1}
+        />
         <div className="flex flex-col flex-1 overflow-hidden">
           <header className="flex items-center justify-between gap-4 p-3 border-b bg-background/80 backdrop-blur-sm sticky top-0 z-40">
             <div className="flex items-center gap-3">
@@ -47,30 +53,60 @@ function DashboardLayout({ children }: { children: React.ReactNode }) {
   );
 }
 
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isLoading } = useUser();
+
+  // Show nothing while checking authentication
+  if (isLoading) {
+    return null;
+  }
+
+  // Block content if not authenticated - AuthModal will show
+  if (!isAuthenticated) {
+    return null;
+  }
+
+  return <>{children}</>;
+}
+
 function Router() {
   return (
     <Switch>
       <Route path="/" component={Landing} />
       <Route path="/dashboard">
-        <DashboardLayout><Home /></DashboardLayout>
+        <ProtectedRoute>
+          <DashboardLayout><Home /></DashboardLayout>
+        </ProtectedRoute>
       </Route>
       <Route path="/challenges">
-        <DashboardLayout><Challenges /></DashboardLayout>
+        <ProtectedRoute>
+          <DashboardLayout><Challenges /></DashboardLayout>
+        </ProtectedRoute>
       </Route>
       <Route path="/items">
-        <DashboardLayout><LearningItems /></DashboardLayout>
+        <ProtectedRoute>
+          <DashboardLayout><LearningItems /></DashboardLayout>
+        </ProtectedRoute>
       </Route>
       <Route path="/progress">
-        <DashboardLayout><Progress /></DashboardLayout>
+        <ProtectedRoute>
+          <DashboardLayout><Progress /></DashboardLayout>
+        </ProtectedRoute>
       </Route>
       <Route path="/achievements">
-        <DashboardLayout><Achievements /></DashboardLayout>
+        <ProtectedRoute>
+          <DashboardLayout><Achievements /></DashboardLayout>
+        </ProtectedRoute>
       </Route>
       <Route path="/settings">
-        <DashboardLayout><Settings /></DashboardLayout>
+        <ProtectedRoute>
+          <DashboardLayout><Settings /></DashboardLayout>
+        </ProtectedRoute>
       </Route>
       <Route path="/chat">
-        <DashboardLayout><Chat /></DashboardLayout>
+        <ProtectedRoute>
+          <DashboardLayout><Chat /></DashboardLayout>
+        </ProtectedRoute>
       </Route>
       <Route component={NotFound} />
     </Switch>

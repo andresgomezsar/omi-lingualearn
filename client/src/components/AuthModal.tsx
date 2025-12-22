@@ -16,7 +16,6 @@ import { useUser } from "@/contexts/UserContext";
 export function AuthModal() {
   const { login, error, isLoading, isAuthenticated } = useUser();
   const [userInput, setUserInput] = useState("");
-  const [isOpen, setIsOpen] = useState(true);
   const [showSuccess, setShowSuccess] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -29,22 +28,19 @@ export function AuthModal() {
     try {
       await login(userInput.trim());
       setShowSuccess(true);
-      setTimeout(() => {
-        setIsOpen(false);
-      }, 1000);
     } catch (err) {
       // Error is handled by UserContext
     }
   };
 
   // Don't show modal if user is authenticated
-  if (isAuthenticated && !isOpen) {
+  if (isAuthenticated) {
     return null;
   }
 
   return (
-    <Dialog open={isOpen} onOpenChange={setIsOpen}>
-      <DialogContent className="sm:max-w-md">
+    <Dialog open={!isAuthenticated} onOpenChange={() => {}}>
+      <DialogContent className="sm:max-w-md [&>button]:hidden">
         <DialogHeader>
           <div className="flex items-center gap-3 mb-2">
             <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center">
