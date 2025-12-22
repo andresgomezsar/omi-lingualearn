@@ -1491,14 +1491,40 @@ export async function registerRoutes(
     }
   });
 
-  // Get current user profile
+  // Login/Get user profile - auto-creates user if needed
   app.get("/api/user/profile", async (req: Request, res: Response) => {
     try {
-      const userId = await getUserIdFromRequest(req);
-      const user = await storage.getUser(userId);
-      
+      const userIdOrOmiUid = (req.query.userId as string) || await getUserIdFromRequest(req);
+
+      let user = await storage.getUser(userIdOrOmiUid);
+
+      // If not found by ID, try by Omi UID
       if (!user) {
-        return res.status(404).json({ error: "User not found" });
+        user = await storage.getUserByOmiUid(userIdOrOmiUid);
+      }
+
+      // If still not found, auto-create user
+      if (!user) {
+        console.log(`Auto-creating user for ID/UID: ${userIdOrOmiUid}`);
+
+        // Check if it looks like an Omi UID (alphanumeric, 20+ chars)
+        const isOmiUid = /^[a-zA-Z0-9]{20,}$/.test(userIdOrOmiUid);
+
+        if (isOmiUid) {
+          // Create user with Omi UID
+          const newUser = await storage.createUser({
+            username: `omi_${userIdOrOmiUid.slice(0, 8)}_${Date.now()}`,
+            password: userIdOrOmiUid,
+          });
+          user = await storage.updateUserOmiUid(newUser.id, userIdOrOmiUid);
+        } else {
+          // Treat as User ID - create user with that specific ID
+          // This handles the case where someone has a UUID but no user record yet
+          return res.status(404).json({
+            error: "User not found",
+            message: "Please use your Omi UID to create an account, or contact support if you have a User ID but no account."
+          });
+        }
       }
 
       res.json({
