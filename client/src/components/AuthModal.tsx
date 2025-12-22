@@ -62,7 +62,7 @@ export function AuthModal() {
             <Label htmlFor="user-id">Omi User ID</Label>
             <Input
               id="user-id"
-              type="text"
+              type="password"
               placeholder="Paste your UID from Omi app"
               value={userInput}
               onChange={(e) => setUserInput(e.target.value)}
