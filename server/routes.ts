@@ -445,9 +445,20 @@ export async function registerRoutes(
           .join(' ');
 
         if (userText.length > 20) {
-          const analysis = await analyzeConversationWithGemini(userText);
+          // Get user's target language for context
+          const userProfile = await storage.getUser(userId);
+          const targetLanguage = userProfile?.targetLanguage || "Spanish";
 
-          if (analysis.issues && analysis.issues.length > 0) {
+          const conversationContext = {
+            title: memory?.structured?.title,
+            category: memory?.structured?.category,
+            targetLanguage,
+          };
+
+          const analysis = await analyzeConversationWithGemini(userText, undefined, conversationContext);
+
+          // Only create learning items if this was language practice
+          if (analysis.isLanguagePractice && analysis.issues && analysis.issues.length > 0) {
             console.log(`Found ${analysis.issues.length} learning items for user ${userId}`);
             for (const issue of analysis.issues) {
               await storage.createLearningItem({
@@ -517,9 +528,9 @@ export async function registerRoutes(
           const samples = audioBuffer.length / 2;
           const durationMs = Math.round((samples / sampleRate) * 1000);
 
-          // Upload to GCP bucket
+          // Upload to GCP bucket using Omi UID for folder naming
           const gcpUri = await gcpStorage.uploadAudioChunk(
-            userId,
+            uid, // Use Omi UID for consistent folder naming
             sessionId,
             audioBuffer,
             timestamp,
@@ -620,24 +631,38 @@ export async function registerRoutes(
 
       // Perform text-based analysis with Gemini
       if (transcriptText && transcriptText.length > 20) {
-        const geminiAnalysis = await analyzeConversationWithGemini(transcriptText);
+        // Manual compilation assumes language practice session
+        const userProfile = await storage.getUser(uid);
+        const targetLanguage = userProfile?.targetLanguage || "Spanish";
+
+        const conversationContext = {
+          title: "Manual Session Compilation",
+          category: "practice",
+          targetLanguage,
+        };
+
+        const geminiAnalysis = await analyzeConversationWithGemini(
+          transcriptText,
+          compiledAudioUri ? [compiledAudioUri] : undefined,
+          conversationContext
+        );
         analysisResult = geminiAnalysis;
-        
+
         // Calculate scores based on analysis results
         const issueCount = geminiAnalysis.issues?.length || 0;
         const wordCount = transcriptText.split(/\s+/).length;
-        
+
         // Score calculation: fewer issues = higher score
         const issueRatio = Math.min(issueCount / Math.max(wordCount / 10, 1), 1);
         overallScore = Math.round(100 - (issueRatio * 50));
         fluencyScore = Math.round(90 - (issueCount * 5));
         accuracyScore = overallScore;
-        
+
         // Count pronunciation issues for pronunciation score
         const pronunciationIssues = geminiAnalysis.issues?.filter((i: any) => i.category === "pronunciation").length || 0;
         pronunciationScore = Math.round(100 - (pronunciationIssues * 15));
-        
-        // Generate lessons from issues found
+
+        // Generate lessons from issues found (manual compilation always creates items)
         for (const issue of geminiAnalysis.issues || []) {
           await storage.createLearningItem({
             userId: uid,
@@ -750,12 +775,30 @@ export async function registerRoutes(
     try {
       const configured = gcpStorage.isConfigured();
       let connected = false;
-      
+
       if (configured) {
         connected = await gcpStorage.testConnection();
       }
 
-      res.json({ configured, connected });
+      // Get folder ID for current user if available
+      let folderId: string | undefined;
+      let omiUid: string | undefined;
+      try {
+        const userId = await getUserIdFromRequest(req);
+        const user = await storage.getUser(userId);
+        if (user?.omiUid) {
+          omiUid = user.omiUid;
+          folderId = gcpStorage.generateFolderIdFromOmiUid(user.omiUid);
+        }
+      } catch {}
+
+      res.json({
+        configured,
+        connected,
+        folderId,
+        omiUid: omiUid ? `${omiUid.substring(0, 8)}...` : undefined, // Partially obscured for privacy
+        folderPath: folderId ? `gs://${process.env.GCP_BUCKET_NAME}/${folderId}/` : undefined
+      });
     } catch (error) {
       res.json({ configured: false, connected: false, error: String(error) });
     }
@@ -1069,9 +1112,9 @@ export async function registerRoutes(
                 console.log(`Compiling ${durationMs}ms of audio for ${bufferKey}, ${leftoverPcm.length} bytes leftover...`);
                 
                 try {
-                  // Upload compiled WAV to GCP
+                  // Upload compiled WAV to GCP using Omi UID for folder naming
                   const { gcpUri, fileSize } = await gcpStorage.uploadCompiledWav(
-                    userId,
+                    uid, // Use Omi UID for consistent folder naming
                     pcmToCompile,
                     sampleRate,
                     buffer.startTimestamp,
@@ -1176,7 +1219,7 @@ export async function registerRoutes(
                   if (gcpStorage.isConfigured()) {
                     try {
                       audioUris = await gcpStorage.getCompiledAudioInTimeRange(
-                        userId,
+                        uid, // Use Omi UID for consistent folder lookup
                         responseStartTime,
                         responseEndTime
                       );
@@ -1218,80 +1261,84 @@ export async function registerRoutes(
               }
             }
             
-            // Check if any segment has a real speaker name (not "Speaker 1" etc.)
-            const segmentsWithRealNames = segments.filter((seg: { speaker?: string }) => 
-              isRealSpeakerName(seg.speaker)
-            );
-            
-            const hasRealSpeakerName = segmentsWithRealNames.length > 0;
-            
-            console.log(`Memory event: ${segments.length} segments, ${segmentsWithRealNames.length} with real names, hasRealName=${hasRealSpeakerName}`);
-            
-            // Only analyze if there's a real speaker name (saves costs)
-            if (hasRealSpeakerName) {
-              // Get the time range of segments with real names
-              const segmentTimes = segmentsWithRealNames
+            // Get all user speech for analysis
+            const userText = segments
+              .filter((seg: { is_user?: boolean }) => seg.is_user === true)
+              .map((seg: { text: string }) => seg.text)
+              .join(' ');
+
+            if (userText.length > 20) {
+              console.log(`Analyzing conversation: "${userText.slice(0, 100)}..."`);
+
+              // Calculate time range from all segments
+              const segmentTimes = segments
                 .filter((seg: { start?: number; end?: number }) => seg.start !== undefined && seg.end !== undefined)
                 .map((seg: { start: number; end: number }) => ({ start: seg.start, end: seg.end }));
-              
+
+              let audioUris: string[] | undefined;
+
               if (segmentTimes.length > 0) {
                 const minStart = Math.min(...segmentTimes.map(t => t.start));
                 const maxEnd = Math.max(...segmentTimes.map(t => t.end));
-                
+
                 // Convert relative ms to actual timestamps (approximate)
                 // Assuming the memory was created at the end of the conversation
                 const now = new Date();
                 const conversationDuration = maxEnd; // ms from start
                 const startTime = new Date(now.getTime() - conversationDuration);
                 const endTime = now;
-                
+
                 // Find audio files with overlapping timestamps
                 const matchingAudioFiles = await storage.getCompiledAudioFilesInRange(
                   userId,
                   startTime,
                   endTime
                 );
-                
+
                 console.log(`Found ${matchingAudioFiles.length} audio files matching time range ${startTime.toISOString()} - ${endTime.toISOString()}`);
-                
-                // Get text from segments with real names for analysis
-                const userText = segmentsWithRealNames
-                  .filter((seg: { is_user?: boolean }) => seg.is_user === true)
-                  .map((seg: { text: string }) => seg.text)
-                  .join(' ');
-                
-                if (userText.length > 20) {
-                  console.log(`Analyzing transcript with real speaker names: "${userText.slice(0, 100)}..."`);
 
-                  // Pass audio URIs for pronunciation analysis if available
-                  const audioUris = matchingAudioFiles.length > 0
-                    ? matchingAudioFiles.map(f => f.gcpUri)
-                    : undefined;
-
-                  if (audioUris && audioUris.length > 0) {
-                    console.log(`Sending ${audioUris.length} audio file(s) to Gemini for pronunciation analysis`);
-                  }
-
-                  const analysis = await analyzeConversationWithGemini(userText, audioUris);
-
-                  if (analysis.issues && analysis.issues.length > 0) {
-                    for (const issue of analysis.issues) {
-                      await storage.createLearningItem({
-                        userId,
-                        sessionId: memory?.id,
-                        originalText: issue.original,
-                        correctedText: issue.corrected,
-                        explanation: issue.explanation,
-                        category: issue.category || "grammar",
-                      });
-                    }
-
-                    console.log(`Created ${analysis.issues.length} learning items from analysis`);
-                  }
+                if (matchingAudioFiles.length > 0) {
+                  audioUris = matchingAudioFiles.map(f => f.gcpUri);
+                  console.log(`Sending ${audioUris.length} audio file(s) to Gemini for context-aware analysis`);
                 }
               }
-            } else {
-              console.log("No real speaker names found, skipping analysis to save costs");
+
+              // Get user's target language for context
+              const userProfile = await storage.getUser(userId);
+              const targetLanguage = userProfile?.targetLanguage || "Spanish";
+
+              // Pass memory structured data for additional context
+              const conversationContext = {
+                title: memory?.structured?.title,
+                category: memory?.structured?.category,
+                targetLanguage,
+              };
+
+              const analysis = await analyzeConversationWithGemini(
+                userText,
+                audioUris,
+                conversationContext
+              );
+
+              // Only create learning items if Gemini determined this was language practice
+              if (analysis.isLanguagePractice && analysis.issues && analysis.issues.length > 0) {
+                console.log(`Gemini detected language practice session - creating ${analysis.issues.length} learning items`);
+
+                for (const issue of analysis.issues) {
+                  await storage.createLearningItem({
+                    userId,
+                    sessionId: memory?.id,
+                    originalText: issue.original,
+                    correctedText: issue.corrected,
+                    explanation: issue.explanation,
+                    category: issue.category || "grammar",
+                  });
+                }
+              } else if (!analysis.isLanguagePractice) {
+                console.log(`Gemini detected normal conversation (not language practice) - skipping feedback`);
+              } else {
+                console.log(`Language practice detected but no issues found - great job!`);
+              }
             }
           }
           return res.json({ status: "ok" });
@@ -2183,8 +2230,14 @@ Respond ONLY with valid JSON, no other text or markdown.`;
 
 async function analyzeConversationWithGemini(
   transcript: string,
-  audioUris?: string[]
+  audioUris?: string[],
+  context?: {
+    title?: string;
+    category?: string;
+    targetLanguage?: string;
+  }
 ): Promise<{
+  isLanguagePractice: boolean;
   issues: Array<{
     original: string;
     corrected: string;
@@ -2193,27 +2246,52 @@ async function analyzeConversationWithGemini(
   }>;
 }> {
   try {
-    const prompt = `You are a language learning assistant. Analyze this conversation ${audioUris && audioUris.length > 0 ? '(transcript + audio)' : 'transcript'} for grammar, vocabulary, or pronunciation issues that a language learner should practice.
+    const targetLang = context?.targetLanguage || "Spanish";
 
-Find up to 3 learning opportunities. For each issue, provide:
-- original: the exact phrase that needs improvement
-- corrected: the better version
-- explanation: brief, friendly explanation
+    const prompt = `You are a context-aware language learning assistant.
+
+CONTEXT:
+- Target Language: ${targetLang}
+${context?.title ? `- Conversation Title: "${context.title}"` : ''}
+${context?.category ? `- Category: ${context.category}` : ''}
+
+TASK 1: Determine if this is LANGUAGE PRACTICE or a NORMAL CONVERSATION
+Language practice indicators:
+- User is practicing ${targetLang} specifically
+- Responding to language challenges or prompts
+- Deliberately practicing grammar/vocabulary
+- Self-correcting or asking for corrections
+- Speaking slowly/carefully in ${targetLang}
+
+Normal conversation indicators:
+- Casual chat with friends/family
+- Work meetings or business calls
+- Natural conversation in native language
+- Bilingual switching for practical communication
+- Not focused on learning
+
+TASK 2: Only if this IS language practice, analyze for improvement opportunities.
+${audioUris && audioUris.length > 0 ? 'IMPORTANT: You have REAL AUDIO. Use it to evaluate ACTUAL pronunciation, intonation, accent, and rhythm.' : ''}
+
+Find up to 3 learning opportunities:
+- original: exact phrase that needs improvement
+- corrected: better idiomatic version
+- explanation: brief, friendly explanation (why natives say it this way)
 - category: "grammar", "vocabulary", "pronunciation", or "idiomatic"
-
-${audioUris && audioUris.length > 0 ? 'IMPORTANT: You have REAL AUDIO. Use it to evaluate ACTUAL pronunciation, intonation, accent, and rhythm. Provide specific pronunciation feedback based on what you hear in the audio.' : ''}
 
 Transcript:
 "${transcript.substring(0, 2000)}"
 
 Respond in JSON format:
 {
+  "isLanguagePractice": true/false,
   "issues": [
-    {"original": "...", "corrected": "...", "explanation": "...", "category": "grammar"}
+    {"original": "...", "corrected": "...", "explanation": "...", "category": "..."}
   ]
 }
 
-If no issues found, respond with: {"issues": []}
+If NOT language practice, respond: {"isLanguagePractice": false, "issues": []}
+If language practice but no issues: {"isLanguagePractice": true, "issues": []}
 Respond ONLY with valid JSON.`;
 
     // Prepare content parts - start with transcript
@@ -2256,15 +2334,19 @@ Respond ONLY with valid JSON.`;
       } : undefined
     });
 
-    const responseText = response.text || '{"issues": []}';
+    const responseText = response.text || '{"isLanguagePractice": false, "issues": []}';
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
+      const parsed = JSON.parse(jsonMatch[0]);
+      return {
+        isLanguagePractice: parsed.isLanguagePractice ?? false,
+        issues: parsed.issues || []
+      };
     }
 
-    return { issues: [] };
+    return { isLanguagePractice: false, issues: [] };
   } catch (error) {
     console.error("Gemini conversation analysis error:", error);
-    return { issues: [] };
+    return { isLanguagePractice: false, issues: [] };
   }
 }

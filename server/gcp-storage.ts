@@ -1,7 +1,19 @@
 import { Storage } from "@google-cloud/storage";
+import { createHash } from "crypto";
 
 let storage: Storage | null = null;
 let bucketName: string | null = null;
+
+/**
+ * Generate a consistent folder identifier from Omi UID
+ * Uses SHA-256 hash to create a privacy-preserving but consistent ID
+ * Takes first 16 characters for a shorter, cleaner folder name
+ */
+export function generateFolderIdFromOmiUid(omiUid: string): string {
+  const hash = createHash('sha256').update(omiUid).digest('hex');
+  // Use first 16 chars of hash for shorter folder names
+  return hash.substring(0, 16);
+}
 
 /**
  * Create a WAV header for PCM16 audio data
@@ -77,10 +89,10 @@ function getBucketName(): string {
 
 /**
  * Upload audio chunk to GCP bucket
- * Path format: {userId}/{sessionId}/chunks/{timestamp}_{index}.pcm
+ * Path format: {hashedOmiUid}/{sessionId}/chunks/{timestamp}_{index}.pcm
  */
 export async function uploadAudioChunk(
-  userId: string,
+  omiUid: string,
   sessionId: string,
   audioData: Buffer,
   timestamp: number,
@@ -88,14 +100,15 @@ export async function uploadAudioChunk(
 ): Promise<string> {
   const storage = getStorage();
   const bucket = storage.bucket(getBucketName());
-  
-  const filePath = `${userId}/${sessionId}/chunks/${timestamp}_${chunkIndex}.pcm`;
+
+  const folderId = generateFolderIdFromOmiUid(omiUid);
+  const filePath = `${folderId}/${sessionId}/chunks/${timestamp}_${chunkIndex}.pcm`;
   const file = bucket.file(filePath);
-  
+
   await file.save(audioData, {
     contentType: "audio/pcm",
     metadata: {
-      userId,
+      folderId,
       sessionId,
       timestamp: timestamp.toString(),
       chunkIndex: chunkIndex.toString(),
@@ -103,16 +116,16 @@ export async function uploadAudioChunk(
   });
 
   const gcpUri = `gs://${getBucketName()}/${filePath}`;
-  console.log(`Uploaded audio chunk to ${gcpUri}`);
+  console.log(`Uploaded audio chunk to ${gcpUri} (folder: ${folderId})`);
   return gcpUri;
 }
 
 /**
  * Upload compiled WAV file to GCP bucket with timestamp-based filename
- * Path format: {userId}/compiled/{startTimestamp}_{endTimestamp}.wav
+ * Path format: {hashedOmiUid}/compiled/{startTimestamp}_{endTimestamp}.wav
  */
 export async function uploadCompiledWav(
-  userId: string,
+  omiUid: string,
   pcmData: Buffer,
   sampleRate: number,
   startTimestamp: Date,
@@ -120,21 +133,22 @@ export async function uploadCompiledWav(
 ): Promise<{ gcpUri: string; fileSize: number }> {
   const storage = getStorage();
   const bucket = storage.bucket(getBucketName());
-  
+
   // Create WAV header and combine with PCM data
   const wavHeader = createWavHeader(pcmData.length, sampleRate);
   const wavData = Buffer.concat([wavHeader, pcmData]);
-  
-  // Use timestamps for filename
+
+  // Use hashed Omi UID for folder and timestamps for filename
+  const folderId = generateFolderIdFromOmiUid(omiUid);
   const startMs = startTimestamp.getTime();
   const endMs = endTimestamp.getTime();
-  const filePath = `${userId}/compiled/${startMs}_${endMs}.wav`;
+  const filePath = `${folderId}/compiled/${startMs}_${endMs}.wav`;
   const file = bucket.file(filePath);
-  
+
   await file.save(wavData, {
     contentType: "audio/wav",
     metadata: {
-      userId,
+      folderId,
       startTimestamp: startTimestamp.toISOString(),
       endTimestamp: endTimestamp.toISOString(),
       sampleRate: sampleRate.toString(),
@@ -143,7 +157,7 @@ export async function uploadCompiledWav(
   });
 
   const gcpUri = `gs://${getBucketName()}/${filePath}`;
-  console.log(`Uploaded compiled WAV to ${gcpUri} (${wavData.length} bytes)`);
+  console.log(`Uploaded compiled WAV to ${gcpUri} (folder: ${folderId}, ${wavData.length} bytes)`);
   return { gcpUri, fileSize: wavData.length };
 }
 
@@ -171,15 +185,16 @@ export async function downloadAudioChunk(gcpUri: string): Promise<Buffer> {
  * List audio chunks for a session
  */
 export async function listAudioChunks(
-  userId: string,
+  omiUid: string,
   sessionId: string
 ): Promise<string[]> {
   const storage = getStorage();
   const bucket = storage.bucket(getBucketName());
-  
-  const prefix = `${userId}/${sessionId}/chunks/`;
+
+  const folderId = generateFolderIdFromOmiUid(omiUid);
+  const prefix = `${folderId}/${sessionId}/chunks/`;
   const [files] = await bucket.getFiles({ prefix });
-  
+
   return files.map(file => `gs://${getBucketName()}/${file.name}`);
 }
 
@@ -215,14 +230,15 @@ export async function getSignedUrl(gcpUri: string): Promise<string> {
  * Used for finding audio files that correspond to a challenge response
  */
 export async function getCompiledAudioInTimeRange(
-  userId: string,
+  omiUid: string,
   startTime: Date,
   endTime: Date
 ): Promise<string[]> {
   const storage = getStorage();
   const bucket = storage.bucket(getBucketName());
 
-  const prefix = `${userId}/compiled/`;
+  const folderId = generateFolderIdFromOmiUid(omiUid);
+  const prefix = `${folderId}/compiled/`;
   const [files] = await bucket.getFiles({ prefix });
 
   const startMs = startTime.getTime();
