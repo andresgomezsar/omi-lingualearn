@@ -1498,24 +1498,44 @@ export async function registerRoutes(
   app.post("/api/auth/login-omi", async (req: Request, res: Response) => {
     try {
       const { omiUid } = req.body;
-      if (!omiUid || typeof omiUid !== 'string' || omiUid.length < 5) {
-        return res.status(400).json({ error: "Valid Omi UID is required" });
+
+      console.log(`[LOGIN-OMI] Login attempt with UID: ${omiUid?.substring(0, 8)}...`);
+
+      // Validate UID format (20+ alphanumeric characters)
+      if (!omiUid || typeof omiUid !== 'string' || omiUid.length < 20) {
+        console.log(`[LOGIN-OMI] Invalid UID length: ${omiUid?.length}`);
+        return res.status(400).json({
+          error: "Invalid Omi UID",
+          message: "Omi UID must be at least 20 characters long. Get it from Omi app: Settings → Profile → User ID"
+        });
+      }
+
+      if (!/^[a-zA-Z0-9]+$/.test(omiUid)) {
+        console.log(`[LOGIN-OMI] Invalid UID format (not alphanumeric)`);
+        return res.status(400).json({
+          error: "Invalid Omi UID",
+          message: "Omi UID must contain only letters and numbers"
+        });
       }
 
       // Check if user exists with this Omi UID
       let user = await storage.getUserByOmiUid(omiUid);
-      
+
       if (!user) {
+        console.log(`[LOGIN-OMI] Creating new user for UID: ${omiUid.substring(0, 8)}...`);
         // Create new user with this Omi UID
         const newUser = await storage.createUser({
-          username: `omi_${omiUid.slice(0, 8)}`,
+          username: `omi_${omiUid.slice(0, 8)}_${Date.now()}`,
           password: omiUid, // Use UID as password for simplicity
         });
         user = await storage.updateUserOmiUid(newUser.id, omiUid);
+        console.log(`[LOGIN-OMI] Created user: ${user?.id}`);
+      } else {
+        console.log(`[LOGIN-OMI] Found existing user: ${user.id}`);
       }
 
-      res.json({ 
-        success: true, 
+      res.json({
+        success: true,
         user: {
           id: user?.id,
           username: user?.username,
@@ -1529,7 +1549,7 @@ export async function registerRoutes(
         }
       });
     } catch (error) {
-      console.error("Error logging in with Omi UID:", error);
+      console.error("[LOGIN-OMI] Error logging in with Omi UID:", error);
       res.status(500).json({ error: "Failed to login" });
     }
   });
@@ -1593,22 +1613,29 @@ export async function registerRoutes(
   // Get user profile - supports userId parameter or falls back to most recent user
   app.get("/api/user/profile", async (req: Request, res: Response) => {
     try {
-      const userIdOrOmiUid = (req.query.userId as string) || await getUserIdFromRequest(req);
+      const providedUserId = req.query.userId as string;
+      const userIdOrOmiUid = providedUserId || await getUserIdFromRequest(req);
+
+      console.log(`[USER PROFILE] Looking up user: provided=${providedUserId}, resolved=${userIdOrOmiUid}`);
 
       let user = await storage.getUser(userIdOrOmiUid);
 
       // If not found by ID, try by Omi UID
       if (!user) {
+        console.log(`[USER PROFILE] User not found by ID, trying Omi UID lookup`);
         user = await storage.getUserByOmiUid(userIdOrOmiUid);
       }
 
       // If still not found, return 404 (do NOT auto-create)
       if (!user) {
+        console.log(`[USER PROFILE] User not found: ${userIdOrOmiUid}`);
         return res.status(404).json({
           error: "User Not Found",
           message: "No account found. Please authenticate using your Omi UID from the Omi app (Settings → Profile → User ID)."
         });
       }
+
+      console.log(`[USER PROFILE] Found user: ${user.id}, omiUid: ${user.omiUid?.substring(0, 8)}...`);
 
       res.json({
         id: user.id,
@@ -1622,7 +1649,7 @@ export async function registerRoutes(
         demoDataEnabled: user.demoDataEnabled
       });
     } catch (error) {
-      console.error("Error fetching user profile:", error);
+      console.error("[USER PROFILE] Error fetching user profile:", error);
       res.status(500).json({ error: "Failed to fetch profile" });
     }
   });
