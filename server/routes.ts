@@ -1262,9 +1262,18 @@ export async function registerRoutes(
                 
                 if (userText.length > 20) {
                   console.log(`Analyzing transcript with real speaker names: "${userText.slice(0, 100)}..."`);
-                  
-                  const analysis = await analyzeConversationWithGemini(userText);
-                  
+
+                  // Pass audio URIs for pronunciation analysis if available
+                  const audioUris = matchingAudioFiles.length > 0
+                    ? matchingAudioFiles.map(f => f.gcpUri)
+                    : undefined;
+
+                  if (audioUris && audioUris.length > 0) {
+                    console.log(`Sending ${audioUris.length} audio file(s) to Gemini for pronunciation analysis`);
+                  }
+
+                  const analysis = await analyzeConversationWithGemini(userText, audioUris);
+
                   if (analysis.issues && analysis.issues.length > 0) {
                     for (const issue of analysis.issues) {
                       await storage.createLearningItem({
@@ -1276,14 +1285,9 @@ export async function registerRoutes(
                         category: issue.category || "grammar",
                       });
                     }
-                    
+
                     console.log(`Created ${analysis.issues.length} learning items from analysis`);
                   }
-                }
-                
-                // TODO: If matchingAudioFiles.length > 0, could send audio to Gemini for pronunciation analysis
-                if (matchingAudioFiles.length > 0) {
-                  console.log(`Audio files available for pronunciation analysis: ${matchingAudioFiles.map(f => f.gcpUri).join(', ')}`);
                 }
               }
             } else {
@@ -2177,7 +2181,10 @@ Respond ONLY with valid JSON, no other text or markdown.`;
   }
 }
 
-async function analyzeConversationWithGemini(transcript: string): Promise<{
+async function analyzeConversationWithGemini(
+  transcript: string,
+  audioUris?: string[]
+): Promise<{
   issues: Array<{
     original: string;
     corrected: string;
@@ -2186,13 +2193,15 @@ async function analyzeConversationWithGemini(transcript: string): Promise<{
   }>;
 }> {
   try {
-    const prompt = `You are a language learning assistant. Analyze this conversation transcript for grammar, vocabulary, or pronunciation issues that a language learner should practice.
+    const prompt = `You are a language learning assistant. Analyze this conversation ${audioUris && audioUris.length > 0 ? '(transcript + audio)' : 'transcript'} for grammar, vocabulary, or pronunciation issues that a language learner should practice.
 
 Find up to 3 learning opportunities. For each issue, provide:
 - original: the exact phrase that needs improvement
 - corrected: the better version
 - explanation: brief, friendly explanation
-- category: "grammar", "vocabulary", or "pronunciation"
+- category: "grammar", "vocabulary", "pronunciation", or "idiomatic"
+
+${audioUris && audioUris.length > 0 ? 'IMPORTANT: You have REAL AUDIO. Use it to evaluate ACTUAL pronunciation, intonation, accent, and rhythm. Provide specific pronunciation feedback based on what you hear in the audio.' : ''}
 
 Transcript:
 "${transcript.substring(0, 2000)}"
@@ -2207,9 +2216,44 @@ Respond in JSON format:
 If no issues found, respond with: {"issues": []}
 Respond ONLY with valid JSON.`;
 
+    // Prepare content parts - start with transcript
+    const contentParts: any[] = [{ text: prompt }];
+
+    // If audio URIs provided, download and include audio data
+    if (audioUris && audioUris.length > 0) {
+      console.log(`Including ${audioUris.length} audio file(s) for pronunciation analysis`);
+
+      const { downloadAudioChunk } = await import("./gcp-storage");
+
+      for (const uri of audioUris) {
+        try {
+          console.log(`Downloading audio: ${uri}`);
+          const audioData = await downloadAudioChunk(uri);
+
+          contentParts.push({
+            inlineData: {
+              mimeType: "audio/wav",
+              data: audioData.toString('base64')
+            }
+          });
+        } catch (audioError) {
+          console.error(`Failed to download audio ${uri}:`, audioError);
+        }
+      }
+
+      if (contentParts.length > 1) {
+        contentParts.push({
+          text: "\n\nAudio file(s) provided above. Use them to evaluate ACTUAL pronunciation, intonation, rhythm, and accent. Give precise pronunciation feedback based on the audio."
+        });
+      }
+    }
+
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      model: audioUris && audioUris.length > 0 ? "gemini-2.0-flash-exp" : "gemini-2.5-flash",
+      contents: contentParts,
+      config: audioUris && audioUris.length > 0 ? {
+        maxOutputTokens: 8000  // More tokens for detailed audio analysis
+      } : undefined
     });
 
     const responseText = response.text || '{"issues": []}';
@@ -2217,7 +2261,7 @@ Respond ONLY with valid JSON.`;
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);
     }
-    
+
     return { issues: [] };
   } catch (error) {
     console.error("Gemini conversation analysis error:", error);

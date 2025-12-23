@@ -57,7 +57,11 @@ export default function Settings() {
   });
 
   const updatePreferencesMutation = useMutation({
-    mutationFn: async (data: { demoDataEnabled?: boolean }) => {
+    mutationFn: async (data: {
+      demoDataEnabled?: boolean;
+      nativeLanguage?: string;
+      targetLanguage?: string;
+    }) => {
       const res = await apiRequest("PATCH", "/api/user/preferences", data);
       return res.json();
     },
