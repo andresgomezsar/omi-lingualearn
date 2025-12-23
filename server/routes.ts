@@ -1590,17 +1590,10 @@ export async function registerRoutes(
     }
   });
 
-  // Get user profile - does NOT auto-create users
+  // Get user profile - supports userId parameter or falls back to most recent user
   app.get("/api/user/profile", async (req: Request, res: Response) => {
     try {
-      const userIdOrOmiUid = req.query.userId as string;
-
-      if (!userIdOrOmiUid) {
-        return res.status(400).json({
-          error: "Missing User ID",
-          message: "Please provide your Omi UID from the Omi app (Settings → Profile → User ID)."
-        });
-      }
+      const userIdOrOmiUid = (req.query.userId as string) || await getUserIdFromRequest(req);
 
       let user = await storage.getUser(userIdOrOmiUid);
 
@@ -1609,10 +1602,11 @@ export async function registerRoutes(
         user = await storage.getUserByOmiUid(userIdOrOmiUid);
       }
 
+      // If still not found, return 404 (do NOT auto-create)
       if (!user) {
         return res.status(404).json({
           error: "User Not Found",
-          message: "No account found with this UID. Please authenticate first using your Omi UID."
+          message: "No account found. Please authenticate using your Omi UID from the Omi app (Settings → Profile → User ID)."
         });
       }
 
