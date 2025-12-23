@@ -96,18 +96,23 @@ function getBaseUrl(req: Request): string {
 
 /**
  * Get or create user from Omi UID
- * Automatically creates a new user if one doesn't exist with this UID
+ * Only creates users with valid Omi UIDs (20+ alphanumeric characters)
  */
 async function getUserFromOmiUid(omiUid: string): Promise<{ id: string; targetLanguage: string }> {
-  if (!omiUid || omiUid.length < 3) {
-    throw new Error("Invalid Omi UID");
+  if (!omiUid || omiUid.length < 20) {
+    throw new Error("Invalid Omi UID - must be at least 20 characters");
+  }
+
+  // Validate it's a proper Omi UID format (alphanumeric only)
+  if (!/^[a-zA-Z0-9]{20,}$/.test(omiUid)) {
+    throw new Error("Invalid Omi UID format - must be alphanumeric");
   }
 
   let user = await storage.getUserByOmiUid(omiUid);
 
   if (!user) {
-    console.log(`Creating new user for Omi UID: ${omiUid}`);
-    // Auto-create user on first interaction
+    console.log(`Creating new user for Omi UID: ${omiUid.substring(0, 8)}...`);
+    // Auto-create user on first webhook interaction
     const newUser = await storage.createUser({
       username: `omi_${omiUid.slice(0, 8)}_${Date.now()}`,
       password: omiUid, // Use UID as password for simplicity
@@ -965,11 +970,26 @@ export async function registerRoutes(
     const uid = req.query.uid as string;
     const session_id = req.query.session_id as string;
     const contentType = req.headers['content-type'] || '';
+    const sampleRate = req.query.sample_rate as string;
+
+    // Log all incoming webhook requests for debugging
+    console.log(`[OMI HUB] Incoming request:`, {
+      method: req.method,
+      event,
+      uid: uid ? `${uid.substring(0, 8)}...` : 'MISSING',
+      session_id,
+      contentType,
+      sampleRate,
+      headers: {
+        'content-type': req.headers['content-type'],
+        'content-length': req.headers['content-length'],
+      }
+    });
 
     // Auto-detect event type from payload structure if not specified
     if (!event) {
       const body = req.body;
-      
+
       // Check content type for audio (binary data)
       if (contentType.includes('octet-stream') || contentType.includes('audio')) {
         event = 'audio';
@@ -988,12 +1008,12 @@ export async function registerRoutes(
       }
       // Default fallback
       else {
-        console.log('Could not auto-detect event type, payload:', JSON.stringify(body).slice(0, 200));
+        console.log('[OMI HUB] Could not auto-detect event type, payload:', JSON.stringify(body).slice(0, 200));
         event = 'unknown';
       }
     }
 
-    console.log(`Omi Hub received: event=${event}, uid=${uid}, session_id=${session_id}`);
+    console.log(`[OMI HUB] Processing event: ${event}, uid: ${uid ? uid.substring(0, 8) + '...' : 'MISSING'}, session: ${session_id}`);
 
     try {
       switch (event) {
@@ -1384,40 +1404,44 @@ export async function registerRoutes(
 
   // Get Omi setup info for the settings page
   app.get("/api/omi/setup-info", (req: Request, res: Response) => {
-    const baseUrl = getBaseUrl(req);
+    // Use Railway URL as default if available, otherwise use request host
+    const railwayUrl = "https://omi-lingualearn-production.up.railway.app";
+    const baseUrl = process.env.RAILWAY_PUBLIC_DOMAIN ? railwayUrl : getBaseUrl(req);
     const hubUrl = `${baseUrl}/api/omi/hub`;
-    
+
     res.json({
       // Primary unified webhook URL - use this for all callbacks
       hub_url: hubUrl,
-      
+
       // Event-specific URLs (all route through the hub)
       webhooks: {
         transcript: `${hubUrl}?event=transcript`,
         audio: `${hubUrl}?event=audio`,
         memory: `${hubUrl}?event=memory`,
       },
-      
+
       // Configuration URLs
       setup_complete_url: `${hubUrl}?event=setup_complete`,
       app_home_url: hubUrl, // GET request redirects to /dashboard
       auth_url: hubUrl, // Same as app_home for authentication
       manifest_url: `${baseUrl}/.well-known/omi-tools.json`,
-      
+
       gcp_configured: gcpStorage.isConfigured(),
-      
+
       instructions: [
         "1. Open the Omi app on your phone",
         "2. Go to Apps -> Create App (or Explore -> Create App)",
         "3. Select 'External Integration' capability",
-        "4. Use the Hub URL for ALL webhook fields:",
+        "4. Use this EXACT Hub URL for ALL webhook fields:",
         `   ${hubUrl}`,
         "5. The Hub auto-detects transcript, audio, memory, and setup events",
         "6. For App Home URL and Auth URL, use the same Hub URL",
         "7. Add the Chat Tools Manifest URL to enable AI tools",
-        "8. Save and install your app!"
+        "8. Save and install your app!",
+        "",
+        "⚠️ IMPORTANT: Make sure to use the full URL including 'https://' and '/api/omi/hub'"
       ],
-      
+
       // Quick copy section for single-webhook limitation
       single_url_mode: {
         description: "If Omi only allows one webhook URL, use this single URL with different event parameters",
@@ -1440,6 +1464,30 @@ export async function registerRoutes(
     } catch (error) {
       res.json({ connected: false, connection: null });
     }
+  });
+
+  // Test endpoint for webhook debugging
+  app.get("/api/omi/hub/test", (req: Request, res: Response) => {
+    const railwayUrl = "https://omi-lingualearn-production.up.railway.app";
+    const baseUrl = process.env.RAILWAY_PUBLIC_DOMAIN ? railwayUrl : getBaseUrl(req);
+
+    res.json({
+      status: "ok",
+      message: "Omi webhook hub is ready to receive requests",
+      endpoints: {
+        hub: `${baseUrl}/api/omi/hub`,
+        audio: `${baseUrl}/api/omi/hub?event=audio&uid=YOUR_OMI_UID&sample_rate=16000&session_id=test123`,
+        memory: `${baseUrl}/api/omi/hub?event=memory&uid=YOUR_OMI_UID`,
+        transcript: `${baseUrl}/api/omi/hub?event=transcript&uid=YOUR_OMI_UID&session_id=test123`
+      },
+      instructions: [
+        "Configure Omi to send webhooks to the hub URL",
+        "Omi will automatically append ?uid=YOUR_UID to all webhook calls",
+        "Make sure your Omi UID is at least 20 characters (alphanumeric only)",
+        "Check Railway logs to see incoming webhook requests"
+      ],
+      gcp_configured: gcpStorage.isConfigured()
+    });
   });
 
   // ============================================
@@ -1542,10 +1590,17 @@ export async function registerRoutes(
     }
   });
 
-  // Login/Get user profile - auto-creates user if needed
+  // Get user profile - does NOT auto-create users
   app.get("/api/user/profile", async (req: Request, res: Response) => {
     try {
-      const userIdOrOmiUid = (req.query.userId as string) || await getUserIdFromRequest(req);
+      const userIdOrOmiUid = req.query.userId as string;
+
+      if (!userIdOrOmiUid) {
+        return res.status(400).json({
+          error: "Missing User ID",
+          message: "Please provide your Omi UID from the Omi app (Settings → Profile → User ID)."
+        });
+      }
 
       let user = await storage.getUser(userIdOrOmiUid);
 
@@ -1554,27 +1609,11 @@ export async function registerRoutes(
         user = await storage.getUserByOmiUid(userIdOrOmiUid);
       }
 
-      // If still not found, auto-create user
       if (!user) {
-        console.log(`Auto-creating user for ID/UID: ${userIdOrOmiUid}`);
-
-        // Check if it looks like an Omi UID (alphanumeric, 20+ chars)
-        const isOmiUid = /^[a-zA-Z0-9]{20,}$/.test(userIdOrOmiUid);
-
-        if (isOmiUid) {
-          // Create user with Omi UID
-          const newUser = await storage.createUser({
-            username: `omi_${userIdOrOmiUid.slice(0, 8)}_${Date.now()}`,
-            password: userIdOrOmiUid,
-          });
-          user = await storage.updateUserOmiUid(newUser.id, userIdOrOmiUid);
-        } else {
-          // Invalid format - must be a valid Omi UID
-          return res.status(404).json({
-            error: "Invalid User ID",
-            message: "Please use your Omi UID from the Omi app (Settings → Profile → User ID). User IDs must be at least 20 characters long."
-          });
-        }
+        return res.status(404).json({
+          error: "User Not Found",
+          message: "No account found with this UID. Please authenticate first using your Omi UID."
+        });
       }
 
       res.json({
