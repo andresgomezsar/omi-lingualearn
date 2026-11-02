@@ -1,3 +1,4 @@
+import type { VoiceChallenge } from "@shared/schema";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { BarChart3, TrendingUp, Target, Calendar, Award } from "lucide-react";
@@ -19,32 +20,20 @@ export default function ProgressPage() {
     queryKey: ["/api/stats/progress"],
   });
 
-  const displayStats = stats || {
-    totalChallenges: 156,
-    completedChallenges: 142,
-    accuracy: 91,
-    weeklyStreak: 5,
-    averageDaily: 4.2,
-    cefrLevel: "B1",
-  };
-
-  const completionRate = Math.round((displayStats.completedChallenges / Math.max(displayStats.totalChallenges, 1)) * 100);
-
-  const weeklyData = [
-    { day: "Mon", value: 85 },
-    { day: "Tue", value: 72 },
-    { day: "Wed", value: 90 },
-    { day: "Thu", value: 65 },
-    { day: "Fri", value: 78 },
-    { day: "Sat", value: 45 },
-    { day: "Sun", value: 60 },
-  ];
-
-  const categoryBreakdown = [
-    { category: "Grammar", progress: 78, color: "bg-primary" },
-    { category: "Vocabulary", progress: 65, color: "bg-accent" },
-    { category: "Pronunciation", progress: 52, color: "bg-secondary" },
-  ];
+  const { data: weekly = [] } = useQuery<{ date: string; count: number }[]>({ queryKey: ["/api/stats/weekly"] });
+  const { data: responses = [] } = useQuery<VoiceChallenge[]>({ queryKey: ["/api/voice-challenges"] });
+  const displayStats = stats || { totalChallenges: 0, completedChallenges: 0, accuracy: 0, weeklyStreak: 0, averageDaily: 0, cefrLevel: "Not assessed" };
+  const completionRate = Math.round(displayStats.completedChallenges / Math.max(displayStats.totalChallenges, 1) * 100);
+  const maximum = Math.max(1, ...weekly.map(d => d.count));
+  const weeklyData = weekly.map(d => ({ day: d.date, count: d.count, value: d.count / maximum * 110 }));
+  const categoryBreakdown = ([
+    { category: "Grammar", key: "grammarScore", color: "bg-primary" },
+    { category: "Vocabulary", key: "vocabularyScore", color: "bg-accent" },
+    { category: "Pronunciation", key: "pronunciationScore", color: "bg-secondary" },
+  ] as const).map(category => {
+    const scores = responses.filter(r => r.status === "completed").map(r => r[category.key]).filter((n): n is number => typeof n === "number");
+    return { ...category, progress: scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null };
+  });
 
   return (
     <div className="p-6 space-y-8 max-w-6xl mx-auto">
@@ -75,8 +64,6 @@ export default function ProgressPage() {
           <StatsCard
             title="Completion Rate"
             value={`${completionRate}%`}
-            trend="up"
-            trendValue="+5% this week"
             icon={<Target className="h-5 w-5" />}
           />
         </motion.div>
@@ -89,8 +76,6 @@ export default function ProgressPage() {
           <StatsCard
             title="Accuracy"
             value={`${displayStats.accuracy}%`}
-            trend="up"
-            trendValue="+3% vs last month"
             icon={<Award className="h-5 w-5" />}
           />
         </motion.div>
@@ -101,9 +86,9 @@ export default function ProgressPage() {
           transition={{ delay: 0.2 }}
         >
           <StatsCard
-            title="Weekly Streak"
-            value={`${displayStats.weeklyStreak} weeks`}
-            subtitle="Keep it going!"
+            title="Active Days"
+            value={`${displayStats.weeklyStreak} days`}
+            subtitle="Over the last seven days"
             icon={<Calendar className="h-5 w-5" />}
           />
         </motion.div>
@@ -147,10 +132,10 @@ export default function ProgressPage() {
                     <motion.div
                       className="w-full bg-primary rounded-t-md"
                       initial={{ height: 0 }}
-                      animate={{ height: `${day.value}%` }}
+                      animate={{ height: day.value }}
                       transition={{ delay: 0.4 + index * 0.05, duration: 0.5 }}
                     />
-                    <span className="text-xs text-muted-foreground">{day.day}</span>
+                    <span className="text-xs text-muted-foreground">{day.day}: {day.count}</span>
                   </div>
                 ))}
               </div>
@@ -165,14 +150,14 @@ export default function ProgressPage() {
         >
           <Card>
             <CardHeader>
-              <CardTitle className="font-display">Category Breakdown</CardTitle>
+              <CardTitle className="font-display">Average AI Feedback</CardTitle>
             </CardHeader>
             <CardContent className="space-y-6">
               {categoryBreakdown.map((cat, index) => (
                 <div key={cat.category} className="space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium">{cat.category}</span>
-                    <span className="text-sm text-muted-foreground">{cat.progress}%</span>
+                    <span className="text-sm text-muted-foreground">{cat.progress === null ? "Not assessed" : `${cat.progress}%`}</span>
                   </div>
                   <motion.div
                     className="h-2 bg-muted rounded-full overflow-hidden"
@@ -183,7 +168,7 @@ export default function ProgressPage() {
                     <motion.div
                       className={`h-full ${cat.color} rounded-full`}
                       initial={{ width: 0 }}
-                      animate={{ width: `${cat.progress}%` }}
+                      animate={{ width: `${cat.progress === null ? "Not assessed" : `${cat.progress}%`}` }}
                       transition={{ delay: 0.6 + index * 0.1, duration: 0.5 }}
                     />
                   </motion.div>
@@ -201,7 +186,7 @@ export default function ProgressPage() {
       >
         <Card>
           <CardHeader>
-            <CardTitle className="font-display">Overall Mastery</CardTitle>
+            <CardTitle className="font-display">Review Progress</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex flex-col md:flex-row items-center justify-around gap-8 py-4">
@@ -224,11 +209,11 @@ export default function ProgressPage() {
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Best Day</p>
-                  <p className="text-2xl font-bold font-display">12 challenges</p>
+                  <p className="text-2xl font-bold font-display">{Math.max(0, ...weekly.map(d => d.count))} reviews</p>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Total Learning Time</p>
-                  <p className="text-2xl font-bold font-display">24h 35m</p>
+                  <p className="text-2xl font-bold font-display">Not tracked</p>
                 </div>
               </div>
             </div>

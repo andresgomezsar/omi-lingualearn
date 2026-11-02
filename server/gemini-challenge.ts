@@ -1,10 +1,11 @@
 import { GoogleGenAI } from "@google/genai";
+import { z } from "zod";
 import type { UserFact, VoiceChallenge } from "@shared/schema";
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 if (!GEMINI_API_KEY) {
-  console.warn("GEMINI_API_KEY not found - challenge generation will not work");
+  /* Private payloads are not logged. */
 }
 
 const genAI = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
@@ -31,7 +32,7 @@ interface GeneratedPrompt {
 interface ChallengeFeedback {
   grammarScore: number;
   vocabularyScore: number;
-  pronunciationScore: number;
+  pronunciationScore: number | null;
   overallScore: number;
   corrections: {
     original: string;
@@ -79,7 +80,7 @@ Respond with JSON only:
 
   try {
     const response = await genAI.models.generateContent({
-      model: "gemini-2.0-flash",
+      model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
       contents: `User fact: "${userFact.content}"
 Target language: ${targetLanguage}
 Language goal: ${languageGoal}
@@ -103,7 +104,7 @@ Generate a personalized speaking challenge.`,
       };
     }
   } catch (error) {
-    console.error("Error generating challenge prompt:", error);
+    /* Private payloads are not logged. */
   }
 
   return {
@@ -118,18 +119,7 @@ export async function analyzeChallengeResponse(
   transcript: string,
   audioUris?: string | string[]
 ): Promise<ChallengeFeedback> {
-  if (!genAI) {
-    return {
-      grammarScore: 75,
-      vocabularyScore: 70,
-      pronunciationScore: 80,
-      overallScore: 75,
-      corrections: [],
-      positives: ["Good effort!"],
-      suggestions: ["Keep practicing!"],
-      summary: "Analysis unavailable - Gemini not configured.",
-    };
-  }
+  if (!genAI) throw new Error("Gemini is not configured");
 
   const systemPrompt = `You are a native ${challenge.targetLanguage || "Spanish"}-speaking language coach analyzing a learner's spoken response.
 
@@ -140,7 +130,7 @@ Target language: ${challenge.targetLanguage || "Spanish"}
 EVALUATION CRITERIA:
 1. Grammar (0-100): Structural correctness
 2. Vocabulary (0-100): Word choice and range
-3. Pronunciation (0-100): Clarity, intonation, rhythm (estimate from transcript patterns)
+3. Pronunciation (0-100): Clarity, intonation, rhythm. Return null when no audio is provided; never estimate pronunciation from text.
 4. **IDIOMATIC NATURALNESS (0-100)**: Does it sound like a native speaker? This is MOST IMPORTANT.
 
 FOCUS ON:
@@ -191,8 +181,9 @@ Analyze this response for the language learning challenge.`
     // If audio URIs provided, download and include audio data for pronunciation analysis
     if (audioUris) {
       const uriArray = Array.isArray(audioUris) ? audioUris : [audioUris];
+      if (uriArray.length > 8) throw new Error("Too many audio files");
 
-      console.log(`Analyzing ${uriArray.length} audio file(s) for pronunciation...`);
+      /* Private payloads are not logged. */
 
       // Import GCP storage functions
       const { downloadAudioChunk } = await import("./gcp-storage");
@@ -200,7 +191,7 @@ Analyze this response for the language learning challenge.`
       // Download each audio file and add to content
       for (const uri of uriArray) {
         try {
-          console.log(`Downloading audio: ${uri}`);
+          /* Private payloads are not logged. */
           const audioData = await downloadAudioChunk(uri);
 
           // Add audio to Gemini multimodal input
@@ -210,9 +201,7 @@ Analyze this response for the language learning challenge.`
               data: audioData.toString('base64')
             }
           });
-        } catch (audioError) {
-          console.error(`Failed to download audio ${uri}:`, audioError);
-        }
+        } catch { throw new Error("Audio could not be read"); }
       }
 
       // Add note about audio analysis
@@ -224,7 +213,7 @@ Analyze this response for the language learning challenge.`
     }
 
     const response = await genAI.models.generateContent({
-      model: "gemini-2.0-flash-exp",  // Use experimental model for audio support
+      model: process.env.GEMINI_MODEL || "gemini-2.5-flash",  // Use experimental model for audio support
       contents: contentParts,
       config: {
         systemInstruction: systemPrompt,
@@ -236,34 +225,24 @@ Analyze this response for the language learning challenge.`
     const text = response.text?.trim() || "";
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      return {
-        grammarScore: parsed.grammarScore ?? 70,
-        vocabularyScore: parsed.vocabularyScore ?? 70,
-        pronunciationScore: parsed.pronunciationScore ?? 75,
-        overallScore: parsed.overallScore ?? 72,
-        corrections: parsed.corrections || [],
-        positives: parsed.positives || ["Good effort!"],
-        suggestions: parsed.suggestions || ["Keep practicing!"],
-        summary: parsed.summary || "Analysis complete.",
-      };
+      const parsed = feedbackSchema.parse(JSON.parse(jsonMatch[0]));
+      return { ...parsed, pronunciationScore: contentParts.some(p => p.inlineData) ? parsed.pronunciationScore : null };
+
     }
   } catch (error) {
-    console.error("Error analyzing challenge response:", error);
+    /* Private payloads are not logged. */
   }
 
-  return {
-    grammarScore: 70,
-    vocabularyScore: 70,
-    pronunciationScore: 75,
-    overallScore: 72,
-    corrections: [],
-    positives: ["Thank you for completing this challenge!"],
-    suggestions: ["Keep practicing regularly for best results."],
-    summary: "Your response has been recorded. Keep up the good work!",
-  };
+  throw new Error("Feedback unavailable; the challenge was not scored");
 }
 
 export function isGeminiConfigured(): boolean {
   return !!genAI;
 }
+
+const score = z.number().int().min(0).max(100);
+const feedbackSchema = z.object({
+  grammarScore: score, vocabularyScore: score, pronunciationScore: score.nullable(), overallScore: score,
+  corrections: z.array(z.object({ original: z.string(), corrected: z.string(), explanation: z.string(), category: z.string() })).max(50),
+  positives: z.array(z.string()).max(20), suggestions: z.array(z.string()).max(20), summary: z.string(),
+});

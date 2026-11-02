@@ -3,44 +3,16 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { GoogleGenAI } from "@google/genai";
 import * as gcpStorage from "./gcp-storage";
+import { installSecurity, requestUserId, publicUser, publicOrigin, operatorUser, trackHandler } from "./security";
+import { ingestAudio, audioPool } from "./audio-ingestion";
 
 // Using direct Gemini API key from Google
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY || "",
-});
+const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
-const DEFAULT_USER_ID = "demo-user";
 
-/**
- * Get user ID from request, with fallback to most recent user
- * Supports userId in query params, body, or defaults to most recent non-demo user
- */
 async function getUserIdFromRequest(req: Request): Promise<string> {
-  const userIdFromQuery = req.query.userId as string;
-  const userIdFromBody = req.body?.userId as string;
-
-  if (userIdFromQuery) return userIdFromQuery;
-  if (userIdFromBody) return userIdFromBody;
-
-  // Fallback to most recent user (excluding demo-user)
-  const recentUser = await storage.getMostRecentUser();
-  return recentUser?.id || DEFAULT_USER_ID;
+  return requestUserId(req);
 }
-
-// In-memory audio buffer for accumulating chunks per user+session
-// When buffer reaches ~1 minute of audio, compile to WAV and upload
-interface AudioBuffer {
-  chunks: Buffer[];
-  startTimestamp: Date;
-  sampleRate: number;
-  totalBytes: number;
-}
-
-// Key format: "userId:sessionId" to avoid cross-session mixing
-const audioBuffers: Map<string, AudioBuffer> = new Map();
-
-// Target: ~1 minute of audio at 16kHz, 16-bit mono = 16000 * 2 * 60 = 1,920,000 bytes
-const TARGET_AUDIO_BYTES = 1920000;
 
 /**
  * Check if a speaker name is a real name (not generic like "Speaker 0", "Speaker 1", etc.)
@@ -88,42 +60,12 @@ function isRealSpeakerName(speaker: string | null | undefined): boolean {
   return true;
 }
 
-function getBaseUrl(req: Request): string {
-  const host = req.get('host') || 'localhost:5000';
-  const protocol = req.get('x-forwarded-proto') || req.protocol || 'https';
-  return `${protocol}://${host}`;
-}
+function getBaseUrl(_req: Request): string { return publicOrigin(); }
 
-/**
- * Get or create user from Omi UID
- * Only creates users with valid Omi UIDs (20+ alphanumeric characters)
- */
 async function getUserFromOmiUid(omiUid: string): Promise<{ id: string; targetLanguage: string }> {
-  if (!omiUid || omiUid.length < 20) {
-    throw new Error("Invalid Omi UID - must be at least 20 characters");
-  }
-
-  // Validate it's a proper Omi UID format (alphanumeric only)
-  if (!/^[a-zA-Z0-9]{20,}$/.test(omiUid)) {
-    throw new Error("Invalid Omi UID format - must be alphanumeric");
-  }
-
-  let user = await storage.getUserByOmiUid(omiUid);
-
-  if (!user) {
-    console.log(`Creating new user for Omi UID: ${omiUid.substring(0, 8)}...`);
-    // Auto-create user on first webhook interaction
-    const newUser = await storage.createUser({
-      username: `omi_${omiUid.slice(0, 8)}_${Date.now()}`,
-      password: omiUid, // Use UID as password for simplicity
-    });
-    user = await storage.updateUserOmiUid(newUser.id, omiUid);
-  }
-
-  return {
-    id: user!.id,
-    targetLanguage: user!.targetLanguage || "Spanish"
-  };
+  if (!process.env.OMI_UID || omiUid !== process.env.OMI_UID) throw new Error("Account mismatch");
+  const user = await operatorUser();
+  return { id: user.id, targetLanguage: user.targetLanguage || "Spanish" };
 }
 
 /**
@@ -198,6 +140,8 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  await installSecurity(app);
+
   
   // ============================================
   // OMI INTEGRATION ENDPOINTS
@@ -205,92 +149,13 @@ export async function registerRoutes(
 
   // Chat Tools Manifest - Required for Omi App Store
   // Format: https://docs.omi.me/doc/developer/apps/ChatTools
-  app.get("/.well-known/omi-tools.json", (req: Request, res: Response) => {
-    const manifest = {
-      tools: [
-        {
-          name: "analyze_speech",
-          description: "Analyze the user's speech for grammar, vocabulary, or pronunciation issues. Use this when the user wants feedback on something they said or how to say something better in their target language.",
-          endpoint: "/api/omi/tools/analyze",
-          method: "POST",
-          parameters: {
-            properties: {
-              text: {
-                type: "string",
-                description: "The text or phrase to analyze for language learning"
-              },
-              target_language: {
-                type: "string",
-                description: "The language to analyze (e.g., 'English', 'Spanish')"
-              }
-            },
-            required: ["text"]
-          },
-          auth_required: false,
-          status_message: "Analyzing your speech..."
-        },
-        {
-          name: "get_learning_status",
-          description: "Get the user's current learning progress, streak, XP, and pending challenges. Use this when the user asks about their progress or language learning stats.",
-          endpoint: "/api/omi/tools/status",
-          method: "POST",
-          parameters: {
-            properties: {},
-            required: []
-          },
-          auth_required: false,
-          status_message: "Getting your learning status..."
-        },
-        {
-          name: "add_to_learning_queue",
-          description: "Add a phrase or grammar point to the user's learning queue for spaced repetition practice. Use this when the user wants to remember or practice something specific.",
-          endpoint: "/api/omi/tools/add-item",
-          method: "POST",
-          parameters: {
-            properties: {
-              original_text: {
-                type: "string",
-                description: "The incorrect or original phrase"
-              },
-              corrected_text: {
-                type: "string",
-                description: "The corrected or better version"
-              },
-              explanation: {
-                type: "string",
-                description: "Brief explanation of why this is better"
-              },
-              category: {
-                type: "string",
-                description: "Category: grammar, vocabulary, or pronunciation"
-              }
-            },
-            required: ["original_text", "corrected_text"]
-          },
-          auth_required: false,
-          status_message: "Adding to your learning queue..."
-        },
-        {
-          name: "get_daily_challenges",
-          description: "Get today's language learning challenges. Use this when the user wants to practice or asks what they should work on today.",
-          endpoint: "/api/omi/tools/challenges",
-          method: "POST",
-          parameters: {
-            properties: {},
-            required: []
-          },
-          auth_required: false,
-          status_message: "Getting your daily challenges..."
-        }
-      ]
-    };
-
-    res.json(manifest);
-  });
+  app.get("/.well-known/omi-tools.json", trackHandler((_req, res) => {
+    res.json({ tools: [], description: "Public Omi tools are disabled. See README for authenticated relay setup." });
+  }));
 
   // Setup Complete Callback - Called by Omi when user installs the app
   // GET endpoint returning {"is_setup_completed": boolean}
-  app.get("/api/omi/setup-complete", async (req: Request, res: Response) => {
+  app.get("/api/omi/setup-complete", trackHandler(async (req: Request, res: Response) => {
     try {
       const uid = req.query.uid as string;
       
@@ -302,13 +167,13 @@ export async function registerRoutes(
         res.json({ is_setup_completed: false });
       }
     } catch (error) {
-      console.error("Error checking setup status:", error);
+      /* Private payloads are not logged. */
       res.json({ is_setup_completed: false });
     }
-  });
+  }));
 
   // POST version for explicit setup completion notification
-  app.post("/api/omi/setup-complete", async (req: Request, res: Response) => {
+  app.post("/api/omi/setup-complete", trackHandler(async (req: Request, res: Response) => {
     try {
       const uid = (req.query.uid as string) || req.body?.uid;
       
@@ -316,7 +181,7 @@ export async function registerRoutes(
         return res.status(400).json({ status: "error", message: "Missing uid" });
       }
       
-      console.log(`Omi setup completed for UID: ${uid}`);
+      /* Private payloads are not logged. */
 
       // Get or create user from Omi UID
       const user = await getUserFromOmiUid(uid);
@@ -329,19 +194,19 @@ export async function registerRoutes(
         status: "connected"
       });
 
-      console.log(`Created connection for user ${user.id}`);
+      /* Private payloads are not logged. */
 
       res.json({ status: "ok" });
     } catch (error) {
-      console.error("Error in setup-complete:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ status: "error" });
     }
-  });
+  }));
 
   // Real-time Transcript Webhook
   // Omi sends: POST /endpoint?session_id=abc123&uid=user123
   // Body: Array of transcript segments
-  app.post("/api/omi/webhook/transcript", async (req: Request, res: Response) => {
+  app.post("/api/omi/webhook/transcript", trackHandler(async (req: Request, res: Response) => {
     try {
       const session_id = req.query.session_id as string;
       const uid = req.query.uid as string;
@@ -351,7 +216,7 @@ export async function registerRoutes(
         return res.status(400).json({ status: "error", message: "Missing uid parameter" });
       }
 
-      console.log(`Received transcript from Omi. UID: ${uid}, Session: ${session_id}, Segments: ${Array.isArray(segments) ? segments.length : 0}`);
+      /* Private payloads are not logged. */
 
       // Get or create user from Omi UID
       const user = await getUserFromOmiUid(uid);
@@ -385,10 +250,10 @@ export async function registerRoutes(
                   xpEarned: 25,
                 });
 
-                console.log(`Created learning item for user ${userId}: ${analysis.original} -> ${analysis.corrected}`);
+                /* Private payloads are not logged. */
               }
             } catch (analysisError) {
-              console.error("Error analyzing segment:", analysisError);
+              /* Private payloads are not logged. */
             }
           }
         }
@@ -396,15 +261,15 @@ export async function registerRoutes(
 
       res.json({ status: "ok" });
     } catch (error) {
-      console.error("Error processing transcript:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ status: "error" });
     }
-  });
+  }));
 
   // Memory Trigger Webhook - Called when a conversation ends
   // Omi sends: POST /endpoint?uid=user123
   // Body: Memory object with id, transcript_segments, structured, etc.
-  app.post("/api/omi/webhook/memory", async (req: Request, res: Response) => {
+  app.post("/api/omi/webhook/memory", trackHandler(async (req: Request, res: Response) => {
     try {
       const uid = req.query.uid as string;
       const memory = req.body;
@@ -413,18 +278,18 @@ export async function registerRoutes(
         return res.status(400).json({ status: "error", message: "Missing uid parameter" });
       }
 
-      console.log(`Received memory from Omi. UID: ${uid}, Memory ID: ${memory?.id}`);
+      /* Private payloads are not logged. */
 
       // Get or create user from Omi UID
       const user = await getUserFromOmiUid(uid);
       const userId = user.id;
 
-      console.log(`Processing memory for user ${userId}`);
+      /* Private payloads are not logged. */
 
       // Extract and store user facts from structured data
       const facts = extractFactsFromMemory(memory);
       if (facts.length > 0) {
-        console.log(`Extracted ${facts.length} facts from memory ${memory?.id}`);
+        /* Private payloads are not logged. */
         for (const fact of facts) {
           try {
             await storage.createUserFact({
@@ -433,9 +298,9 @@ export async function registerRoutes(
               category: fact.category,
               content: fact.content,
             });
-            console.log(`Stored fact: [${fact.category}] ${fact.content.slice(0, 50)}...`);
+            /* Private payloads are not logged. */
           } catch (error) {
-            console.error("Error storing fact:", error);
+            /* Private payloads are not logged. */
           }
         }
       }
@@ -464,7 +329,7 @@ export async function registerRoutes(
 
           // Only create learning items if this was language practice
           if (analysis.isLanguagePractice && analysis.issues && analysis.issues.length > 0) {
-            console.log(`Found ${analysis.issues.length} learning items for user ${userId}`);
+            /* Private payloads are not logged. */
             for (const issue of analysis.issues) {
               await storage.createLearningItem({
                 userId,
@@ -481,112 +346,42 @@ export async function registerRoutes(
 
       res.json({ status: "ok" });
     } catch (error) {
-      console.error("Error processing memory:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ status: "error" });
     }
-  });
+  }));
 
   // Real-time Audio Bytes Webhook
   // Omi sends: POST /endpoint?sample_rate=16000&uid=user123
   // Body: Raw PCM16 audio bytes (application/octet-stream)
-  app.post("/api/omi/webhook/audio", async (req: Request, res: Response) => {
-    try {
-      const uid = req.query.uid as string;
-      const sampleRate = parseInt(req.query.sample_rate as string) || 16000;
-      const sessionId = req.query.session_id as string || `audio-${Date.now()}`;
-
-      if (!uid) {
-        return res.status(400).json({ status: "error", message: "Missing uid parameter" });
-      }
-
-      // Get or create user from Omi UID
-      const user = await getUserFromOmiUid(uid);
-      const userId = user.id;
-
-      // Get raw audio buffer from request body
-      const chunks: Buffer[] = [];
-      req.on('data', (chunk: Buffer) => chunks.push(chunk));
-      req.on('end', async () => {
-        try {
-          const audioBuffer = Buffer.concat(chunks);
-
-          if (audioBuffer.length === 0) {
-            console.log(`Received empty audio chunk from UID: ${uid}`);
-            return res.json({ status: "ok" });
-          }
-
-          console.log(`Received audio bytes from Omi. UID: ${uid}, User: ${userId}, Session: ${sessionId}, Size: ${audioBuffer.length} bytes, Sample Rate: ${sampleRate}`);
-
-          // Check if GCP is configured
-          if (!gcpStorage.isConfigured()) {
-            console.log("GCP storage not configured, skipping audio upload");
-            return res.json({ status: "ok", message: "GCP not configured" });
-          }
-
-          // Get existing chunks for this session to determine index
-          const existingChunks = await storage.getAudioChunks(sessionId);
-          const chunkIndex = existingChunks.length;
-          const timestamp = Date.now();
-
-          // Calculate duration based on sample rate and buffer size
-          // PCM16 = 2 bytes per sample
-          const samples = audioBuffer.length / 2;
-          const durationMs = Math.round((samples / sampleRate) * 1000);
-
-          // Upload to GCP bucket using Omi UID for folder naming
-          const gcpUri = await gcpStorage.uploadAudioChunk(
-            uid, // Use Omi UID for consistent folder naming
-            sessionId,
-            audioBuffer,
-            timestamp,
-            chunkIndex
-          );
-
-          // Store chunk metadata
-          await storage.createAudioChunk({
-            sessionId,
-            userId,
-            gcpUri,
-            startMs: chunkIndex > 0 ? existingChunks[chunkIndex - 1]?.endMs || 0 : 0,
-            endMs: (chunkIndex > 0 ? existingChunks[chunkIndex - 1]?.endMs || 0 : 0) + durationMs,
-            sampleRate,
-            durationMs,
-            chunkIndex,
-          });
-
-          console.log(`Stored audio chunk ${chunkIndex} for user ${userId}, session ${sessionId}: ${gcpUri}`);
-          res.json({ status: "ok" });
-        } catch (uploadError) {
-          console.error("Error uploading audio:", uploadError);
-          res.status(500).json({ status: "error" });
-        }
-      });
-    } catch (error) {
-      console.error("Error processing audio bytes:", error);
-      res.status(500).json({ status: "error" });
-    }
-  });
+  app.post("/api/omi/webhook/audio", trackHandler(async (req, res) => {
+    try { await ingestAudio(req, res); }
+    catch { res.status(500).json({ error: "Audio upload failed" }); }
+  }));
 
   // Trigger audio compilation and analysis for a session
-  app.post("/api/omi/compile-session/:sessionId", async (req: Request, res: Response) => {
+  app.post("/api/omi/compile-session/:sessionId", trackHandler(async (req: Request, res: Response) => {
     try {
       const { sessionId } = req.params;
-      const uid = req.query.uid as string || DEFAULT_USER_ID;
+      const uid = await getUserIdFromRequest(req);
+      const omiUid = process.env.OMI_UID;
+      if (!omiUid) return res.status(503).json({ error: "Audio requires configured OMI_UID" });
 
       // Get all audio chunks for this session
-      const chunks = await storage.getAudioChunks(sessionId);
+      const chunks = (await storage.getAudioChunks(sessionId)).filter(c => c.userId === uid);
+      if (chunks.length > 8) return res.status(413).json({ error: "Compile at most 8 audio chunks" });
       if (chunks.length === 0) {
         return res.status(404).json({ error: "No audio chunks found for session" });
       }
 
       // Get transcript segments for this session
-      const segments = await storage.getTranscriptSegments(sessionId);
+      const segments = (await storage.getTranscriptSegments(sessionId)).filter(s => s.userId === uid);
       const transcriptText = segments
         .filter(s => s.isUser)
         .map(s => s.text)
         .join(' ');
 
-      console.log(`Compiling session ${sessionId}: ${chunks.length} audio chunks, ${segments.length} transcript segments`);
+      /* Private payloads are not logged. */
 
       // Create audio analysis record
       const analysis = await storage.createAudioAnalysis({
@@ -620,16 +415,16 @@ export async function registerRoutes(
           // Upload compiled audio with proper WAV header
           const startTime = chunks[0]?.createdAt || new Date();
           const endTime = chunks[chunks.length - 1]?.createdAt || new Date();
-          const result = await gcpStorage.uploadCompiledWav(uid, compiledPcm, sampleRate, startTime, endTime);
+          const result = await gcpStorage.uploadCompiledWav(omiUid, compiledPcm, sampleRate, startTime, endTime);
           compiledAudioUri = result.gcpUri;
-          console.log(`Compiled audio uploaded: ${compiledAudioUri}`);
+          /* Private payloads are not logged. */
 
           // Update analysis with compiled audio URI
           await storage.updateAudioAnalysis(analysis.id, {
             compiledAudioUri,
           });
         } catch (audioError) {
-          console.error("Error compiling audio:", audioError);
+          /* Private payloads are not logged. */
           // Continue with text-based analysis even if audio compilation fails
         }
       }
@@ -665,7 +460,7 @@ export async function registerRoutes(
 
         // Count pronunciation issues for pronunciation score
         const pronunciationIssues = geminiAnalysis.issues?.filter((i: any) => i.category === "pronunciation").length || 0;
-        pronunciationScore = Math.round(100 - (pronunciationIssues * 15));
+        pronunciationScore = compiledAudioUri ? Math.max(0, Math.round(100 - (pronunciationIssues * 15))) : null;
 
         // Generate lessons from issues found (manual compilation always creates items)
         for (const issue of geminiAnalysis.issues || []) {
@@ -715,44 +510,47 @@ export async function registerRoutes(
         scores: { overall: overallScore, pronunciation: pronunciationScore, fluency: fluencyScore, accuracy: accuracyScore }
       });
     } catch (error) {
-      console.error("Error compiling session:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to compile session" });
     }
-  });
+  }));
 
   // Get audio analysis status
-  app.get("/api/audio-analysis/:sessionId", async (req: Request, res: Response) => {
+  app.get("/api/audio-analysis/:sessionId", trackHandler(async (req: Request, res: Response) => {
     try {
       const { sessionId } = req.params;
       const analysis = await storage.getAudioAnalysis(sessionId);
       
-      if (!analysis) {
+      if (!analysis || analysis.userId !== requestUserId(req)) {
         return res.status(404).json({ error: "Analysis not found" });
       }
 
       res.json(analysis);
     } catch (error) {
-      console.error("Error fetching analysis:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to fetch analysis" });
     }
-  });
+  }));
 
   // Get lessons for user
-  app.get("/api/lessons", async (req: Request, res: Response) => {
+  app.get("/api/lessons", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const lessons = await storage.getLessons(userId);
       res.json(lessons);
     } catch (error) {
-      console.error("Error fetching lessons:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to fetch lessons" });
     }
-  });
+  }));
 
   // Complete a lesson
-  app.patch("/api/lessons/:id/complete", async (req: Request, res: Response) => {
+  app.patch("/api/lessons/:id/complete", trackHandler(async (req: Request, res: Response) => {
     try {
       const id = parseInt(req.params.id);
+      const owned = await storage.getLesson(id);
+      if (!owned || owned.userId !== requestUserId(req)) return res.status(404).json({ error: "Lesson not found" });
+      if (owned.completed) return res.json(owned);
       const lesson = await storage.completeLesson(id);
       
       if (!lesson) {
@@ -770,13 +568,13 @@ export async function registerRoutes(
 
       res.json(lesson);
     } catch (error) {
-      console.error("Error completing lesson:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to complete lesson" });
     }
-  });
+  }));
 
   // Get GCP status
-  app.get("/api/gcp/status", async (req: Request, res: Response) => {
+  app.get("/api/gcp/status", trackHandler(async (req: Request, res: Response) => {
     try {
       const configured = gcpStorage.isConfigured();
       let connected = false;
@@ -805,9 +603,9 @@ export async function registerRoutes(
         folderPath: folderId ? `gs://${process.env.GCP_BUCKET_NAME}/${folderId}/` : undefined
       });
     } catch (error) {
-      res.json({ configured: false, connected: false, error: String(error) });
+      res.json({ configured: false, connected: false, error: "Provider operation failed" });
     }
-  });
+  }));
 
   // ============================================
   // OMI CHAT TOOLS (Called by Omi when user invokes tools)
@@ -815,7 +613,7 @@ export async function registerRoutes(
   // ============================================
 
   // Analyze speech tool
-  app.post("/api/omi/tools/analyze", async (req: Request, res: Response) => {
+  app.post("/api/omi/tools/analyze", trackHandler(async (req: Request, res: Response) => {
     try {
       const { text, target_language } = req.body;
       
@@ -845,13 +643,13 @@ export async function registerRoutes(
         });
       }
     } catch (error) {
-      console.error("Error in analyze tool:", error);
+      /* Private payloads are not logged. */
       res.json({ error: "Sorry, I couldn't analyze that right now. Try again?" });
     }
-  });
+  }));
 
   // Get learning status tool
-  app.post("/api/omi/tools/status", async (req: Request, res: Response) => {
+  app.post("/api/omi/tools/status", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const stats = await storage.getOverviewStats(userId);
@@ -867,13 +665,13 @@ export async function registerRoutes(
 
       res.json({ result });
     } catch (error) {
-      console.error("Error in status tool:", error);
+      /* Private payloads are not logged. */
       res.json({ error: "Couldn't fetch your status right now" });
     }
-  });
+  }));
 
   // Add to learning queue tool
-  app.post("/api/omi/tools/add-item", async (req: Request, res: Response) => {
+  app.post("/api/omi/tools/add-item", trackHandler(async (req: Request, res: Response) => {
     try {
       const { original_text, corrected_text, explanation, category } = req.body;
 
@@ -894,13 +692,13 @@ export async function registerRoutes(
         result: `Added to your learning queue!\n\n"${original_text}" -> "${corrected_text}"\n\nI'll remind you to practice this using spaced repetition.`
       });
     } catch (error) {
-      console.error("Error in add-item tool:", error);
+      /* Private payloads are not logged. */
       res.json({ error: "Couldn't add to your queue right now" });
     }
-  });
+  }));
 
   // Get daily challenges tool
-  app.post("/api/omi/tools/challenges", async (req: Request, res: Response) => {
+  app.post("/api/omi/tools/challenges", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const challenges = await storage.getDailyChallenges(userId);
@@ -928,10 +726,10 @@ export async function registerRoutes(
         });
       }
     } catch (error) {
-      console.error("Error in challenges tool:", error);
+      /* Private payloads are not logged. */
       res.json({ error: "Couldn't fetch your challenges right now" });
     }
-  });
+  }));
 
   // ============================================
   // UNIFIED OMI HUB ENDPOINT
@@ -940,7 +738,7 @@ export async function registerRoutes(
   // Use: /api/omi/hub?event=transcript|audio|memory|setup_complete
 
   // GET handler for setup_complete check and app home
-  app.get("/api/omi/hub", async (req: Request, res: Response) => {
+  app.get("/api/omi/hub", trackHandler(async (req: Request, res: Response) => {
     const event = req.query.event as string;
     const uid = req.query.uid as string;
 
@@ -953,7 +751,7 @@ export async function registerRoutes(
         }
         return res.json({ is_setup_completed: false });
       } catch (error) {
-        console.error("Error checking setup status:", error);
+        /* Private payloads are not logged. */
         return res.json({ is_setup_completed: false });
       }
     }
@@ -961,11 +759,11 @@ export async function registerRoutes(
     // Default: redirect to app home (dashboard)
     const baseUrl = getBaseUrl(req);
     res.redirect(`${baseUrl}/dashboard`);
-  });
+  }));
 
   // POST handler for webhooks and setup_complete notification
   // Auto-detects event type from payload if not specified in query
-  app.post("/api/omi/hub", async (req: Request, res: Response) => {
+  app.post("/api/omi/hub", trackHandler(async (req: Request, res: Response) => {
     let event = req.query.event as string;
     const uid = req.query.uid as string;
     const session_id = req.query.session_id as string;
@@ -973,18 +771,7 @@ export async function registerRoutes(
     const sampleRate = req.query.sample_rate as string;
 
     // Log all incoming webhook requests for debugging
-    console.log(`[OMI HUB] Incoming request:`, {
-      method: req.method,
-      event,
-      uid: uid ? `${uid.substring(0, 8)}...` : 'MISSING',
-      session_id,
-      contentType,
-      sampleRate,
-      headers: {
-        'content-type': req.headers['content-type'],
-        'content-length': req.headers['content-length'],
-      }
-    });
+    /* Private payloads are not logged. */
 
     // Auto-detect event type from payload structure if not specified
     if (!event) {
@@ -1008,12 +795,12 @@ export async function registerRoutes(
       }
       // Default fallback
       else {
-        console.log('[OMI HUB] Could not auto-detect event type, payload:', JSON.stringify(body).slice(0, 200));
+        /* Private payloads are not logged. */
         event = 'unknown';
       }
     }
 
-    console.log(`[OMI HUB] Processing event: ${event}, uid: ${uid ? uid.substring(0, 8) + '...' : 'MISSING'}, session: ${session_id}`);
+    /* Private payloads are not logged. */
 
     try {
       switch (event) {
@@ -1029,7 +816,7 @@ export async function registerRoutes(
           const userId = user.id;
           const targetLanguage = user.targetLanguage;
 
-          console.log(`Processing transcript for user ${userId}: ${Array.isArray(segments) ? segments.length : 0} segments`);
+          /* Private payloads are not logged. */
 
           if (Array.isArray(segments) && segments.length > 0) {
             const userSegments = segments.filter((seg: { is_user?: boolean }) => seg.is_user === true);
@@ -1064,7 +851,7 @@ export async function registerRoutes(
                     });
                   }
                 } catch (analysisError) {
-                  console.error("Error analyzing segment:", analysisError);
+                  /* Private payloads are not logged. */
                 }
               }
             }
@@ -1073,106 +860,7 @@ export async function registerRoutes(
         }
 
         case "audio": {
-          // Handle audio bytes - accumulate and compile ~1 minute WAV files
-          const sampleRate = parseInt(req.query.sample_rate as string) || 16000;
-
-          if (!uid) {
-            return res.status(400).json({ status: "error", message: "Missing uid parameter" });
-          }
-
-          const user = await getUserFromOmiUid(uid);
-          const userId = user.id;
-          const sessionId = session_id || "default";
-          const bufferKey = `${userId}:${sessionId}`;
-          
-          const chunks: Buffer[] = [];
-          req.on('data', (chunk: Buffer) => chunks.push(chunk));
-          req.on('end', async () => {
-            try {
-              const audioChunk = Buffer.concat(chunks);
-              
-              if (audioChunk.length === 0) {
-                return res.json({ status: "ok" });
-              }
-
-              if (!gcpStorage.isConfigured()) {
-                console.log("GCP not configured, skipping audio storage");
-                return res.json({ status: "ok", message: "GCP not configured" });
-              }
-
-              // Get or create buffer for this user+session
-              let buffer = audioBuffers.get(bufferKey);
-              if (!buffer) {
-                buffer = {
-                  chunks: [],
-                  startTimestamp: new Date(),
-                  sampleRate,
-                  totalBytes: 0
-                };
-                audioBuffers.set(bufferKey, buffer);
-              }
-
-              // Add chunk to buffer
-              buffer.chunks.push(audioChunk);
-              buffer.totalBytes += audioChunk.length;
-              
-              console.log(`Audio buffer for ${bufferKey}: ${buffer.totalBytes} bytes (${Math.round(buffer.totalBytes / TARGET_AUDIO_BYTES * 100)}% of target)`);
-
-              // Check if we've accumulated ~1 minute of audio
-              if (buffer.totalBytes >= TARGET_AUDIO_BYTES) {
-                const endTimestamp = new Date();
-                const allPcmData = Buffer.concat(buffer.chunks);
-                
-                // Take exactly TARGET_AUDIO_BYTES for this compilation, preserve the rest
-                const pcmToCompile = allPcmData.subarray(0, TARGET_AUDIO_BYTES);
-                const leftoverPcm = allPcmData.subarray(TARGET_AUDIO_BYTES);
-                
-                const durationMs = Math.round((pcmToCompile.length / 2 / sampleRate) * 1000);
-                
-                console.log(`Compiling ${durationMs}ms of audio for ${bufferKey}, ${leftoverPcm.length} bytes leftover...`);
-                
-                try {
-                  // Upload compiled WAV to GCP using Omi UID for folder naming
-                  const { gcpUri, fileSize } = await gcpStorage.uploadCompiledWav(
-                    uid, // Use Omi UID for consistent folder naming
-                    pcmToCompile,
-                    sampleRate,
-                    buffer.startTimestamp,
-                    endTimestamp
-                  );
-                  
-                  // Store metadata in database
-                  await storage.createCompiledAudioFile({
-                    userId,
-                    gcpUri,
-                    startTimestamp: buffer.startTimestamp,
-                    endTimestamp,
-                    durationMs,
-                    sampleRate,
-                    fileSize
-                  });
-                  
-                  console.log(`Compiled WAV uploaded: ${gcpUri}`);
-                } catch (uploadError) {
-                  console.error("Error uploading compiled WAV:", uploadError);
-                }
-                
-                // Start new buffer with leftover data
-                audioBuffers.set(bufferKey, {
-                  chunks: leftoverPcm.length > 0 ? [leftoverPcm] : [],
-                  startTimestamp: new Date(),
-                  sampleRate,
-                  totalBytes: leftoverPcm.length
-                });
-              }
-
-              res.json({ status: "ok" });
-            } catch (error) {
-              console.error("Error processing audio:", error);
-              res.status(500).json({ status: "error" });
-            }
-          });
-          return;
+          return await ingestAudio(req, res);
         }
 
         case "memory": {
@@ -1187,12 +875,12 @@ export async function registerRoutes(
           const user = await getUserFromOmiUid(uid);
           const userId = user.id;
 
-          console.log(`Processing memory for user ${userId}, memory ID: ${memory?.id}`);
+          /* Private payloads are not logged. */
 
           // Extract and store user facts from structured data
           const facts = extractFactsFromMemory(memory);
           if (facts.length > 0) {
-            console.log(`Extracted ${facts.length} facts from memory ${memory?.id}`);
+            /* Private payloads are not logged. */
             for (const fact of facts) {
               try {
                 await storage.createUserFact({
@@ -1201,9 +889,9 @@ export async function registerRoutes(
                   category: fact.category,
                   content: fact.content,
                 });
-                console.log(`Stored fact: [${fact.category}] ${fact.content.slice(0, 50)}...`);
+                /* Private payloads are not logged. */
               } catch (error) {
-                console.error("Error storing fact:", error);
+                /* Private payloads are not logged. */
               }
             }
           }
@@ -1222,7 +910,7 @@ export async function registerRoutes(
                 .join(' ');
 
               if (userSpeech.length > 30) {
-                console.log(`Auto-submitting challenge response for challenge ${activeChallenge.id}: "${userSpeech.slice(0, 100)}..."`);
+                /* Private payloads are not logged. */
 
                 try {
                   const { analyzeChallengeResponse } = await import("./gemini-challenge");
@@ -1243,9 +931,9 @@ export async function registerRoutes(
                         responseStartTime,
                         responseEndTime
                       );
-                      console.log(`Found ${audioUris.length} audio file(s) for challenge response`);
+                      /* Private payloads are not logged. */
                     } catch (audioError) {
-                      console.error("Error fetching audio files for challenge:", audioError);
+                      /* Private payloads are not logged. */
                     }
                   }
 
@@ -1271,12 +959,12 @@ export async function registerRoutes(
                     completedAt: new Date()
                   });
 
-                  console.log(`Challenge ${activeChallenge.id} completed with score ${feedback.overallScore}, XP earned: ${updatedChallenge.xpEarned}`);
+                  /* Private payloads are not logged. */
 
                   // Skip normal analysis for this memory since it was a challenge response
-                  return res.json({ status: "ok", challenge_completed: true, xp_earned: updatedChallenge.xpEarned });
+                  return res.json({ status: "ok", challenge_completed: true, xp_earned: updatedChallenge?.xpEarned || 0 });
                 } catch (error) {
-                  console.error("Error processing challenge response:", error);
+                  /* Private payloads are not logged. */
                 }
               }
             }
@@ -1288,7 +976,7 @@ export async function registerRoutes(
               .join(' ');
 
             if (userText.length > 20) {
-              console.log(`Analyzing conversation: "${userText.slice(0, 100)}..."`);
+              /* Private payloads are not logged. */
 
               // Calculate time range from all segments
               const segmentTimes = segments
@@ -1315,11 +1003,11 @@ export async function registerRoutes(
                   endTime
                 );
 
-                console.log(`Found ${matchingAudioFiles.length} audio files matching time range ${startTime.toISOString()} - ${endTime.toISOString()}`);
+                /* Private payloads are not logged. */
 
                 if (matchingAudioFiles.length > 0) {
                   audioUris = matchingAudioFiles.map(f => f.gcpUri);
-                  console.log(`Sending ${audioUris.length} audio file(s) to Gemini for context-aware analysis`);
+                  /* Private payloads are not logged. */
                 }
               }
 
@@ -1342,7 +1030,7 @@ export async function registerRoutes(
 
               // Only create learning items if Gemini determined this was language practice
               if (analysis.isLanguagePractice && analysis.issues && analysis.issues.length > 0) {
-                console.log(`Gemini detected language practice session - creating ${analysis.issues.length} learning items`);
+                /* Private payloads are not logged. */
 
                 for (const issue of analysis.issues) {
                   await storage.createLearningItem({
@@ -1355,9 +1043,9 @@ export async function registerRoutes(
                   });
                 }
               } else if (!analysis.isLanguagePractice) {
-                console.log(`Gemini detected normal conversation (not language practice) - skipping feedback`);
+                /* Private payloads are not logged. */
               } else {
-                console.log(`Language practice detected but no issues found - great job!`);
+                /* Private payloads are not logged. */
               }
             }
           }
@@ -1381,7 +1069,7 @@ export async function registerRoutes(
             status: "connected"
           });
 
-          console.log(`Setup complete for user ${user.id}, UID: ${omiUid}`);
+          /* Private payloads are not logged. */
 
           return res.json({ status: "ok" });
         }
@@ -1389,71 +1077,28 @@ export async function registerRoutes(
         case "unknown":
         default:
           // Unknown or undetected event type - still respond OK
-          console.log(`Unknown hub event: ${event}, body keys: ${Object.keys(req.body || {}).join(', ')}`);
+          /* Private payloads are not logged. */
           return res.json({ status: "ok", message: "Event processed" });
       }
     } catch (error) {
-      console.error(`Error processing hub event ${event}:`, error);
+      /* Private payloads are not logged. */
       res.status(500).json({ status: "error" });
     }
-  });
+  }));
 
   // ============================================
   // SETUP & STATUS ENDPOINTS
   // ============================================
 
   // Get Omi setup info for the settings page
-  app.get("/api/omi/setup-info", (req: Request, res: Response) => {
-    // Use Railway URL as default if available, otherwise use request host
-    const railwayUrl = "https://omi-lingualearn-production.up.railway.app";
-    const baseUrl = process.env.RAILWAY_PUBLIC_DOMAIN ? railwayUrl : getBaseUrl(req);
-    const hubUrl = `${baseUrl}/api/omi/hub`;
-
-    res.json({
-      // Primary unified webhook URL - use this for all callbacks
-      hub_url: hubUrl,
-
-      // Event-specific URLs (all route through the hub)
-      webhooks: {
-        transcript: `${hubUrl}?event=transcript`,
-        audio: `${hubUrl}?event=audio`,
-        memory: `${hubUrl}?event=memory`,
-      },
-
-      // Configuration URLs
-      setup_complete_url: `${hubUrl}?event=setup_complete`,
-      app_home_url: hubUrl, // GET request redirects to /dashboard
-      auth_url: hubUrl, // Same as app_home for authentication
-      manifest_url: `${baseUrl}/.well-known/omi-tools.json`,
-
-      gcp_configured: gcpStorage.isConfigured(),
-
-      instructions: [
-        "1. Open the Omi app on your phone",
-        "2. Go to Apps -> Create App (or Explore -> Create App)",
-        "3. Select 'External Integration' capability",
-        "4. Use this EXACT Hub URL for ALL webhook fields:",
-        `   ${hubUrl}`,
-        "5. The Hub auto-detects transcript, audio, memory, and setup events",
-        "6. For App Home URL and Auth URL, use the same Hub URL",
-        "7. Add the Chat Tools Manifest URL to enable AI tools",
-        "8. Save and install your app!",
-        "",
-        "⚠️ IMPORTANT: Make sure to use the full URL including 'https://' and '/api/omi/hub'"
-      ],
-
-      // Quick copy section for single-webhook limitation
-      single_url_mode: {
-        description: "If Omi only allows one webhook URL, use this single URL with different event parameters",
-        base_url: hubUrl,
-        events: ["transcript", "audio", "memory", "setup_complete"],
-        example: `${hubUrl}?event=transcript&uid=YOUR_USER_ID&session_id=SESSION_ID`
-      }
-    });
-  });
+  app.get("/api/omi/setup-info", trackHandler((_req, res) => res.json({
+    hub_url: `${publicOrigin()}/api/omi/hub`,
+    enabled: !!process.env.OMI_WEBHOOK_SECRET && !!process.env.OMI_UID,
+    instructions: ["Requires a trusted relay that authenticates Omi upstream delivery.", "Relay sends Bearer OMI_WEBHOOK_SECRET, configured uid, X-Event-Id and X-Event-Timestamp (epoch milliseconds).", "Direct Omi custom-header support has not been verified. Leave ingestion disabled without a verified relay."],
+  })));
 
   // Check Omi connection status
-  app.get("/api/omi/status", async (req: Request, res: Response) => {
+  app.get("/api/omi/status", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const connection = await storage.getOmiConnection(userId);
@@ -1464,201 +1109,25 @@ export async function registerRoutes(
     } catch (error) {
       res.json({ connected: false, connection: null });
     }
-  });
+  }));
 
   // Test endpoint for webhook debugging
-  app.get("/api/omi/hub/test", (req: Request, res: Response) => {
-    const railwayUrl = "https://omi-lingualearn-production.up.railway.app";
-    const baseUrl = process.env.RAILWAY_PUBLIC_DOMAIN ? railwayUrl : getBaseUrl(req);
-
-    res.json({
-      status: "ok",
-      message: "Omi webhook hub is ready to receive requests",
-      endpoints: {
-        hub: `${baseUrl}/api/omi/hub`,
-        audio: `${baseUrl}/api/omi/hub?event=audio&uid=YOUR_OMI_UID&sample_rate=16000&session_id=test123`,
-        memory: `${baseUrl}/api/omi/hub?event=memory&uid=YOUR_OMI_UID`,
-        transcript: `${baseUrl}/api/omi/hub?event=transcript&uid=YOUR_OMI_UID&session_id=test123`
-      },
-      instructions: [
-        "Configure Omi to send webhooks to the hub URL",
-        "Omi will automatically append ?uid=YOUR_UID to all webhook calls",
-        "Make sure your Omi UID is at least 20 characters (alphanumeric only)",
-        "Check Railway logs to see incoming webhook requests"
-      ],
-      gcp_configured: gcpStorage.isConfigured()
-    });
-  });
-
   // ============================================
   // AUTH & USER ENDPOINTS
   // ============================================
 
-  // Login with Omi UID - creates user if doesn't exist, returns user data
-  app.post("/api/auth/login-omi", async (req: Request, res: Response) => {
-    try {
-      const { omiUid } = req.body;
-
-      console.log(`[LOGIN-OMI] Login attempt with UID: ${omiUid?.substring(0, 8)}...`);
-
-      // Validate UID format (20+ alphanumeric characters)
-      if (!omiUid || typeof omiUid !== 'string' || omiUid.length < 20) {
-        console.log(`[LOGIN-OMI] Invalid UID length: ${omiUid?.length}`);
-        return res.status(400).json({
-          error: "Invalid Omi UID",
-          message: "Omi UID must be at least 20 characters long. Get it from Omi app: Settings → Profile → User ID"
-        });
-      }
-
-      if (!/^[a-zA-Z0-9]+$/.test(omiUid)) {
-        console.log(`[LOGIN-OMI] Invalid UID format (not alphanumeric)`);
-        return res.status(400).json({
-          error: "Invalid Omi UID",
-          message: "Omi UID must contain only letters and numbers"
-        });
-      }
-
-      // Check if user exists with this Omi UID
-      let user = await storage.getUserByOmiUid(omiUid);
-
-      if (!user) {
-        console.log(`[LOGIN-OMI] Creating new user for UID: ${omiUid.substring(0, 8)}...`);
-        // Create new user with this Omi UID
-        const newUser = await storage.createUser({
-          username: `omi_${omiUid.slice(0, 8)}_${Date.now()}`,
-          password: omiUid, // Use UID as password for simplicity
-        });
-        user = await storage.updateUserOmiUid(newUser.id, omiUid);
-        console.log(`[LOGIN-OMI] Created user: ${user?.id}`);
-      } else {
-        console.log(`[LOGIN-OMI] Found existing user: ${user.id}`);
-      }
-
-      res.json({
-        success: true,
-        user: {
-          id: user?.id,
-          username: user?.username,
-          omiUid: user?.omiUid,
-          nativeLanguage: user?.nativeLanguage,
-          targetLanguage: user?.targetLanguage,
-          streak: user?.streak,
-          totalXp: user?.totalXp,
-          level: user?.level,
-          demoDataEnabled: user?.demoDataEnabled
-        }
-      });
-    } catch (error) {
-      console.error("[LOGIN-OMI] Error logging in with Omi UID:", error);
-      res.status(500).json({ error: "Failed to login" });
-    }
-  });
-
-  // List all users
-  app.get("/api/users", async (req: Request, res: Response) => {
-    try {
-      const users = await storage.getAllUsers();
-      res.json(users.map(u => ({
-        id: u.id,
-        username: u.username,
-        omiUid: u.omiUid,
-        targetLanguage: u.targetLanguage,
-        streak: u.streak,
-        totalXp: u.totalXp,
-        level: u.level,
-        createdAt: u.createdAt
-      })));
-    } catch (error) {
-      console.error("Error fetching users:", error);
-      res.status(500).json({ error: "Failed to fetch users" });
-    }
-  });
-
-  // Get current/most recent user
-  app.get("/api/users/current", async (req: Request, res: Response) => {
-    try {
-      const user = await storage.getMostRecentUser();
-      if (!user) {
-        // Fallback to demo user
-        const demoUser = await storage.getUser(DEFAULT_USER_ID);
-        if (!demoUser) {
-          return res.status(404).json({ error: "No users found" });
-        }
-        return res.json({
-          id: demoUser.id,
-          username: demoUser.username,
-          omiUid: demoUser.omiUid,
-          targetLanguage: demoUser.targetLanguage,
-          streak: demoUser.streak,
-          totalXp: demoUser.totalXp,
-          level: demoUser.level
-        });
-      }
-
-      res.json({
-        id: user.id,
-        username: user.username,
-        omiUid: user.omiUid,
-        targetLanguage: user.targetLanguage,
-        streak: user.streak,
-        totalXp: user.totalXp,
-        level: user.level
-      });
-    } catch (error) {
-      console.error("Error fetching current user:", error);
-      res.status(500).json({ error: "Failed to fetch current user" });
-    }
-  });
-
-  // Get user profile - supports userId parameter or falls back to most recent user
-  app.get("/api/user/profile", async (req: Request, res: Response) => {
-    try {
-      const providedUserId = req.query.userId as string;
-      const userIdOrOmiUid = providedUserId || await getUserIdFromRequest(req);
-
-      console.log(`[USER PROFILE] Looking up user: provided=${providedUserId}, resolved=${userIdOrOmiUid}`);
-
-      let user = await storage.getUser(userIdOrOmiUid);
-
-      // If not found by ID, try by Omi UID
-      if (!user) {
-        console.log(`[USER PROFILE] User not found by ID, trying Omi UID lookup`);
-        user = await storage.getUserByOmiUid(userIdOrOmiUid);
-      }
-
-      // If still not found, return 404 (do NOT auto-create)
-      if (!user) {
-        console.log(`[USER PROFILE] User not found: ${userIdOrOmiUid}`);
-        return res.status(404).json({
-          error: "User Not Found",
-          message: "No account found. Please authenticate using your Omi UID from the Omi app (Settings → Profile → User ID)."
-        });
-      }
-
-      console.log(`[USER PROFILE] Found user: ${user.id}, omiUid: ${user.omiUid?.substring(0, 8)}...`);
-
-      res.json({
-        id: user.id,
-        username: user.username,
-        omiUid: user.omiUid,
-        nativeLanguage: user.nativeLanguage,
-        targetLanguage: user.targetLanguage,
-        streak: user.streak,
-        totalXp: user.totalXp,
-        level: user.level,
-        demoDataEnabled: user.demoDataEnabled
-      });
-    } catch (error) {
-      console.error("[USER PROFILE] Error fetching user profile:", error);
-      res.status(500).json({ error: "Failed to fetch profile" });
-    }
-  });
+  app.post("/api/auth/login-omi", trackHandler((_req, res) => res.status(410).json({ error: "Use operator sign-in" })));
+  app.get("/api/users", trackHandler((_req, res) => res.status(404).json({ error: "Not available" })));
+  app.get("/api/users/current", trackHandler(async (req, res) => res.json(publicUser((await storage.getUser(requestUserId(req)))!))));
+  app.get("/api/user/profile", trackHandler(async (req, res) => res.json(publicUser((await storage.getUser(requestUserId(req)))!))));
 
   // Update user preferences
-  app.patch("/api/user/preferences", async (req: Request, res: Response) => {
+  app.patch("/api/user/preferences", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const { demoDataEnabled, nativeLanguage, targetLanguage } = req.body;
+      if ((demoDataEnabled !== undefined && typeof demoDataEnabled !== "boolean") || [nativeLanguage, targetLanguage].some(v => v !== undefined && (typeof v !== "string" || !v.trim() || v.length > 80))) return res.status(400).json({ error: "Invalid preferences" });
+
       
       const user = await storage.updateUserPreferences(userId, {
         demoDataEnabled,
@@ -1670,24 +1139,25 @@ export async function registerRoutes(
         return res.status(404).json({ error: "User not found" });
       }
 
-      res.json({ success: true, user });
+      res.json({ success: true, user: publicUser(user) });
     } catch (error) {
-      console.error("Error updating preferences:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to update preferences" });
     }
-  });
+  }));
 
   // Reset all user data
-  app.post("/api/user/reset", async (req: Request, res: Response) => {
+  app.post("/api/user/reset", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       
+      audioPool.clear();
       await storage.resetUserData(userId);
       
       const user = await storage.getUser(userId);
       res.json({ 
         success: true, 
-        message: "All data has been reset",
+        message: "Local learning data reset. Cloud recordings must be deleted separately.",
         user: user ? {
           id: user.id,
           streak: user.streak,
@@ -1696,17 +1166,17 @@ export async function registerRoutes(
         } : null
       });
     } catch (error) {
-      console.error("Error resetting user data:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to reset data" });
     }
-  });
+  }));
 
   // ============================================
   // CHALLENGE CHAT ENDPOINTS
   // ============================================
 
   // Get chat messages
-  app.get("/api/chat/messages", async (req: Request, res: Response) => {
+  app.get("/api/chat/messages", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const challengeId = req.query.challengeId ? parseInt(req.query.challengeId as string) : undefined;
@@ -1714,13 +1184,13 @@ export async function registerRoutes(
       const messages = await storage.getChatMessages(userId, challengeId);
       res.json(messages);
     } catch (error) {
-      console.error("Error fetching chat messages:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to fetch messages" });
     }
-  });
+  }));
 
   // Send chat message and get Gemini response
-  app.post("/api/chat/send", async (req: Request, res: Response) => {
+  app.post("/api/chat/send", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const { message, challengeId } = req.body;
@@ -1762,7 +1232,8 @@ Help users understand their speaking challenges, explain grammar concepts, and p
 Be encouraging and supportive. Keep responses concise but informative.
 ${contextPrompt}`;
 
-      const response = await ai.models.generateContent({
+      if (!ai) throw new Error("Gemini is not configured");
+    const response = await ai.models.generateContent({
         model: "gemini-2.0-flash",
         contents: [
           { role: "user", parts: [{ text: systemPrompt + "\n\nUser: " + message }] }
@@ -1790,78 +1261,82 @@ ${contextPrompt}`;
         } : null
       });
     } catch (error) {
-      console.error("Error sending chat message:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to send message" });
     }
-  });
+  }));
 
   // Clear chat history
-  app.delete("/api/chat/clear", async (req: Request, res: Response) => {
+  app.delete("/api/chat/clear", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       await storage.clearChatMessages(userId);
       res.json({ success: true });
     } catch (error) {
-      console.error("Error clearing chat:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to clear chat" });
     }
-  });
+  }));
 
   // ============================================
   // EXISTING APP ENDPOINTS
   // ============================================
 
-  app.get("/api/stats/overview", async (req: Request, res: Response) => {
+  app.get("/api/stats/overview", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const stats = await storage.getOverviewStats(userId);
       res.json(stats);
     } catch (error) {
-      console.error("Error fetching overview stats:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to fetch stats" });
     }
-  });
+  }));
 
-  app.get("/api/stats/weekly", async (req: Request, res: Response) => {
+  app.get("/api/stats/weekly", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const stats = await storage.getWeeklyStats(userId);
       res.json(stats);
     } catch (error) {
-      console.error("Error fetching weekly stats:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to fetch weekly stats" });
     }
-  });
+  }));
 
-  app.get("/api/stats/progress", async (req: Request, res: Response) => {
+  app.get("/api/stats/progress", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const stats = await storage.getProgressStats(userId);
       res.json(stats);
     } catch (error) {
-      console.error("Error fetching progress stats:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to fetch progress stats" });
     }
-  });
+  }));
 
-  app.get("/api/challenges/today", async (req: Request, res: Response) => {
+  app.get("/api/challenges/today", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const challenges = await storage.getDailyChallenges(userId);
       res.json(challenges);
     } catch (error) {
-      console.error("Error fetching daily challenges:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to fetch challenges" });
     }
-  });
+  }));
 
-  app.patch("/api/challenges/:id/complete", async (req: Request, res: Response) => {
+  app.patch("/api/challenges/:id/complete", trackHandler(async (req: Request, res: Response) => {
     try {
       const id = parseInt(req.params.id);
       const { quality } = req.body;
       
-      const challenge = await storage.completeChallenge(id, quality || 5);
-      if (!challenge) {
+      const owned = await storage.getDailyChallenge(id);
+      if (!owned || owned.userId !== requestUserId(req)) return res.status(404).json({ error: "Challenge not found" });
+      if (owned.completed) return res.json(owned);
+      if (!Number.isInteger(quality) || quality < 0 || quality > 5) return res.status(400).json({ error: "Quality must be 0–5" });
+      const challenge = await storage.completeChallenge(id, quality);
+      if (!challenge || challenge.userId !== requestUserId(req)) {
         return res.status(404).json({ error: "Challenge not found" });
       }
 
@@ -1875,48 +1350,48 @@ ${contextPrompt}`;
 
       res.json(challenge);
     } catch (error) {
-      console.error("Error completing challenge:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to complete challenge" });
     }
-  });
+  }));
 
-  app.get("/api/learning-items", async (req: Request, res: Response) => {
+  app.get("/api/learning-items", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const items = await storage.getLearningItems(userId);
       res.json(items);
     } catch (error) {
-      console.error("Error fetching learning items:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to fetch learning items" });
     }
-  });
+  }));
 
-  app.post("/api/learning-items", async (req: Request, res: Response) => {
+  app.post("/api/learning-items", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const item = await storage.createLearningItem({
-        userId,
         ...req.body,
+        userId,
       });
       res.status(201).json(item);
     } catch (error) {
-      console.error("Error creating learning item:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to create learning item" });
     }
-  });
+  }));
 
-  app.get("/api/achievements", async (req: Request, res: Response) => {
+  app.get("/api/achievements", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const achievements = await storage.getAchievements(userId);
       res.json(achievements);
     } catch (error) {
-      console.error("Error fetching achievements:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to fetch achievements" });
     }
-  });
+  }));
 
-  app.post("/api/analyze-text", async (req: Request, res: Response) => {
+  app.post("/api/analyze-text", trackHandler(async (req: Request, res: Response) => {
     try {
       const { text } = req.body;
       
@@ -1927,56 +1402,56 @@ ${contextPrompt}`;
       const analysis = await analyzeTextWithGemini(text);
       res.json(analysis);
     } catch (error) {
-      console.error("Error analyzing text:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to analyze text" });
     }
-  });
+  }));
 
   // ============================================
   // VOICE CHALLENGE ENDPOINTS
   // ============================================
 
   // Get active voice challenge for current user
-  app.get("/api/voice-challenges/active", async (req: Request, res: Response) => {
+  app.get("/api/voice-challenges/active", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const challenge = await storage.getActiveVoiceChallenge(userId);
       res.json(challenge || null);
     } catch (error) {
-      console.error("Error fetching active challenge:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to fetch active challenge" });
     }
-  });
+  }));
 
   // Get all voice challenges for current user
-  app.get("/api/voice-challenges", async (req: Request, res: Response) => {
+  app.get("/api/voice-challenges", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const challenges = await storage.getVoiceChallenges(userId);
       res.json(challenges);
     } catch (error) {
-      console.error("Error fetching challenges:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to fetch challenges" });
     }
-  });
+  }));
 
   // Get a specific voice challenge
-  app.get("/api/voice-challenges/:id", async (req: Request, res: Response) => {
+  app.get("/api/voice-challenges/:id", trackHandler(async (req: Request, res: Response) => {
     try {
       const id = parseInt(req.params.id);
       const challenge = await storage.getVoiceChallenge(id);
-      if (!challenge) {
+      if (!challenge || challenge.userId !== requestUserId(req)) {
         return res.status(404).json({ error: "Challenge not found" });
       }
       res.json(challenge);
     } catch (error) {
-      console.error("Error fetching challenge:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to fetch challenge" });
     }
-  });
+  }));
 
   // Generate a new voice challenge
-  app.post("/api/voice-challenges/generate", async (req: Request, res: Response) => {
+  app.post("/api/voice-challenges/generate", trackHandler(async (req: Request, res: Response) => {
     try {
       const { generateChallengePrompt } = await import("./gemini-challenge");
       const userId = await getUserIdFromRequest(req);
@@ -2042,13 +1517,13 @@ ${contextPrompt}`;
 
       res.json(challenge);
     } catch (error) {
-      console.error("Error generating challenge:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to generate challenge" });
     }
-  });
+  }));
 
   // Submit response to a voice challenge
-  app.post("/api/voice-challenges/:id/respond", async (req: Request, res: Response) => {
+  app.post("/api/voice-challenges/:id/respond", trackHandler(async (req: Request, res: Response) => {
     try {
       const id = parseInt(req.params.id);
       const { transcript, audioUri } = req.body;
@@ -2058,10 +1533,17 @@ ${contextPrompt}`;
       }
 
       const challenge = await storage.getVoiceChallenge(id);
-      if (!challenge) {
+      if (!challenge || challenge.userId !== requestUserId(req)) {
         return res.status(404).json({ error: "Challenge not found" });
       }
 
+      if (challenge.status !== "active") return res.status(409).json({ error: "Challenge already resolved" });
+      if (typeof transcript !== "string" || transcript.length > 12000) return res.status(400).json({ error: "Invalid transcript" });
+      if (audioUri !== undefined) {
+        const registered = await storage.getCompiledAudioFiles(requestUserId(req));
+        if (typeof audioUri !== "string" || !registered.some(f => f.gcpUri === audioUri)) return res.status(403).json({ error: "Audio is not registered to this account" });
+        gcpStorage.authorizedObjectPath(audioUri);
+      }
       // Analyze the response with Gemini
       const { analyzeChallengeResponse } = await import("./gemini-challenge");
       const feedback = await analyzeChallengeResponse(challenge, transcript, audioUri);
@@ -2103,18 +1585,19 @@ ${contextPrompt}`;
         feedback,
       });
     } catch (error) {
-      console.error("Error submitting response:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to submit response" });
     }
-  });
+  }));
 
   // Regenerate/skip a challenge and get a new one
-  app.post("/api/voice-challenges/:id/regenerate", async (req: Request, res: Response) => {
+  app.post("/api/voice-challenges/:id/regenerate", trackHandler(async (req: Request, res: Response) => {
     try {
       const id = parseInt(req.params.id);
       
       // Mark current challenge as skipped
       const existingChallenge = await storage.getVoiceChallenge(id);
+      if (!existingChallenge || existingChallenge.userId !== requestUserId(req)) return res.status(404).json({ error: "Challenge not found" });
       if (existingChallenge) {
         await storage.updateVoiceChallenge(id, { status: "skipped" });
       }
@@ -2155,29 +1638,29 @@ ${contextPrompt}`;
 
       res.json(challenge);
     } catch (error) {
-      console.error("Error regenerating challenge:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to regenerate challenge" });
     }
-  });
+  }));
 
   // ============================================
   // USER FACTS ENDPOINTS
   // ============================================
 
   // Get all user facts
-  app.get("/api/user-facts", async (req: Request, res: Response) => {
+  app.get("/api/user-facts", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const facts = await storage.getUserFacts(userId);
       res.json(facts);
     } catch (error) {
-      console.error("Error fetching user facts:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to fetch user facts" });
     }
-  });
+  }));
 
   // Add a user fact manually
-  app.post("/api/user-facts", async (req: Request, res: Response) => {
+  app.post("/api/user-facts", trackHandler(async (req: Request, res: Response) => {
     try {
       const userId = await getUserIdFromRequest(req);
       const { content, category } = req.body;
@@ -2193,43 +1676,13 @@ ${contextPrompt}`;
 
       res.status(201).json(fact);
     } catch (error) {
-      console.error("Error creating user fact:", error);
+      /* Private payloads are not logged. */
       res.status(500).json({ error: "Failed to create user fact" });
     }
-  });
+  }));
 
   // Sync facts from Omi API (placeholder - requires Omi API key)
-  app.post("/api/user-facts/sync-omi", async (req: Request, res: Response) => {
-    try {
-      const userId = await getUserIdFromRequest(req);
-      // For now, add some demo facts if none exist
-      const existingFacts = await storage.getUserFacts(userId);
-
-      if (existingFacts.length === 0) {
-        const demoFacts = [
-          { content: "User enjoys traveling and has visited 5 countries", category: "hobby" },
-          { content: "User prefers coffee over tea, especially espresso", category: "preference" },
-          { content: "User is interested in learning new languages", category: "interest" },
-          { content: "User works from home as a software developer", category: "work" },
-          { content: "User loves watching documentary films", category: "entertainment" },
-        ];
-
-        for (const fact of demoFacts) {
-          await storage.createUserFact({
-            userId,
-            content: fact.content,
-            category: fact.category,
-          });
-        }
-      }
-
-      const facts = await storage.getUserFacts(userId);
-      res.json({ synced: facts.length, facts });
-    } catch (error) {
-      console.error("Error syncing facts from Omi:", error);
-      res.status(500).json({ error: "Failed to sync facts" });
-    }
-  });
+  app.post("/api/user-facts/sync-omi", trackHandler((_req, res) => res.status(501).json({ error: "Direct Omi sync is not implemented. Use authenticated memory callbacks." })));
 
   return httpServer;
 }
@@ -2268,8 +1721,9 @@ Prioritize naturalness over correctness. Textbook-correct but unnatural phrases 
 
 Respond ONLY with valid JSON, no other text or markdown.`;
 
+    if (!ai) throw new Error("Gemini is not configured");
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
     });
 
@@ -2281,14 +1735,14 @@ Respond ONLY with valid JSON, no other text or markdown.`;
       return JSON.parse(jsonMatch[0]);
     }
     
-    return { hasIssues: false };
+    throw new Error("Text analysis unavailable");
   } catch (error) {
-    console.error("Gemini analysis error:", error);
-    return { hasIssues: false };
+    /* Private payloads are not logged. */
+    throw new Error("Text analysis unavailable");
   }
 }
 
-async function analyzeConversationWithGemini(
+export async function analyzeConversationWithGemini(
   transcript: string,
   audioUris?: string[],
   context?: {
@@ -2305,6 +1759,7 @@ async function analyzeConversationWithGemini(
     category: string;
   }>;
 }> {
+  if (audioUris && audioUris.length > 8) throw new Error("Too many audio files");
   try {
     const targetLang = context?.targetLanguage || "Spanish";
 
@@ -2359,13 +1814,13 @@ Respond ONLY with valid JSON.`;
 
     // If audio URIs provided, download and include audio data
     if (audioUris && audioUris.length > 0) {
-      console.log(`Including ${audioUris.length} audio file(s) for pronunciation analysis`);
+      /* Private payloads are not logged. */
 
       const { downloadAudioChunk } = await import("./gcp-storage");
 
       for (const uri of audioUris) {
         try {
-          console.log(`Downloading audio: ${uri}`);
+          /* Private payloads are not logged. */
           const audioData = await downloadAudioChunk(uri);
 
           contentParts.push({
@@ -2375,7 +1830,7 @@ Respond ONLY with valid JSON.`;
             }
           });
         } catch (audioError) {
-          console.error(`Failed to download audio ${uri}:`, audioError);
+          /* Private payloads are not logged. */
         }
       }
 
@@ -2386,8 +1841,9 @@ Respond ONLY with valid JSON.`;
       }
     }
 
+    if (!ai) throw new Error("Gemini is not configured");
     const response = await ai.models.generateContent({
-      model: audioUris && audioUris.length > 0 ? "gemini-2.0-flash-exp" : "gemini-2.5-flash",
+      model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
       contents: contentParts,
       config: audioUris && audioUris.length > 0 ? {
         maxOutputTokens: 8000  // More tokens for detailed audio analysis
@@ -2404,9 +1860,9 @@ Respond ONLY with valid JSON.`;
       };
     }
 
-    return { isLanguagePractice: false, issues: [] };
+    throw new Error("Conversation analysis unavailable");
   } catch (error) {
-    console.error("Gemini conversation analysis error:", error);
-    return { isLanguagePractice: false, issues: [] };
+    /* Private payloads are not logged. */
+    throw new Error("Conversation analysis unavailable");
   }
 }

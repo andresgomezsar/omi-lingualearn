@@ -1,6 +1,6 @@
 import { Switch, Route, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/lib/theme-provider";
@@ -22,6 +22,7 @@ import Chat from "@/pages/chat";
 
 function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { user } = useUser();
+  const { data: connection } = useQuery<{ connected: boolean }>({ queryKey: ["/api/omi/status"], refetchInterval: 30000 });
 
   const style = {
     "--sidebar-width": "18rem",
@@ -40,7 +41,7 @@ function DashboardLayout({ children }: { children: React.ReactNode }) {
           <header className="flex items-center justify-between gap-4 p-3 border-b bg-background/80 backdrop-blur-sm sticky top-0 z-40">
             <div className="flex items-center gap-3">
               <SidebarTrigger data-testid="button-sidebar-toggle" />
-              <OmiStatus connected={true} streaming={false} />
+              <OmiStatus connected={connection?.connected ?? false} streaming={false} />
             </div>
             <ThemeToggle />
           </header>

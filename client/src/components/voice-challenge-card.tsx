@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
-  Mic, 
-  Target, 
-  Sparkles, 
-  CheckCircle2, 
+import {
+  Mic,
+  Target,
+  Sparkles,
+  CheckCircle2,
   AlertCircle,
   RefreshCw,
   MessageSquare,
@@ -29,8 +29,9 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
   const { toast } = useToast();
   const [showFeedback, setShowFeedback] = useState(false);
 
-  const { data: activeChallenge, isLoading } = useQuery<VoiceChallenge | null>({
-    queryKey: ["/api/voice-challenges/active"],
+  const { data: challengeHistory, isLoading } = useQuery<VoiceChallenge[]>({
+    queryKey: ["/api/voice-challenges"],
+    refetchInterval: 5000,
   });
 
   const generateMutation = useMutation({
@@ -38,7 +39,7 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
       await apiRequest("POST", "/api/voice-challenges/generate", {});
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/voice-challenges/active"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/voice-challenges"] });
       toast({
         title: "New challenge ready!",
         description: "Your personalized challenge has been created.",
@@ -49,8 +50,8 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
       const isNoMemories = error.message?.includes("No Omi memories");
       toast({
         title: isNoMemories ? "No memories found" : "Failed to generate challenge",
-        description: isNoMemories 
-          ? "Connect your Omi device or enable Demo Mode in Settings." 
+        description: isNoMemories
+          ? "Connect your Omi device or enable Demo Mode in Settings."
           : "Please try again later.",
         variant: "destructive",
       });
@@ -62,7 +63,7 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
       await apiRequest("POST", `/api/voice-challenges/${challengeId}/regenerate`, {});
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/voice-challenges/active"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/voice-challenges"] });
       toast({
         title: "New challenge generated!",
         description: "Here's a different speaking prompt for you.",
@@ -72,17 +73,18 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
       const isNoAlternatives = error.message?.includes("No alternative");
       toast({
         title: isNoAlternatives ? "No alternatives available" : "Failed to regenerate",
-        description: isNoAlternatives 
-          ? "You need more Omi memories to generate different challenges." 
+        description: isNoAlternatives
+          ? "You need more Omi memories to generate different challenges."
           : "Please try again later.",
         variant: "destructive",
       });
     },
   });
 
-  const challenge = activeChallenge;
+  const challenge = challengeHistory?.find(c => c.status === "active" || c.status === "pending") || challengeHistory?.find(c => c.status === "completed");
   const isCompleted = challenge?.status === "completed";
-  const feedback = challenge?.feedbackJson ? JSON.parse(challenge.feedbackJson) : null;
+  let feedback = null;
+  try { feedback = challenge?.feedbackJson ? JSON.parse(challenge.feedbackJson) : null; } catch { /* Older malformed feedback must not crash the page. */ }
 
   if (isLoading) {
     return (
@@ -144,7 +146,7 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
               {challenge.languageGoal}
             </Badge>
           )}
-          <Badge 
+          <Badge
             variant={isCompleted ? "default" : "outline"}
             className={isCompleted ? "bg-green-500" : ""}
           >
@@ -250,7 +252,7 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
                     How to complete this challenge
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Say "lingua learn" to your Omi device, then speak your response. Your speech will be analyzed automatically.
+                    With a verified Omi relay connected, speak your response. An authenticated memory event submits it for analysis.
                   </p>
                 </div>
               </div>
@@ -276,26 +278,26 @@ export function VoiceChallengeCard({ expanded = false }: VoiceChallengeCardProps
   );
 }
 
-function ScoreCard({ 
-  label, 
-  score, 
-  highlight = false 
-}: { 
-  label: string; 
-  score: number; 
+function ScoreCard({
+  label,
+  score,
+  highlight = false
+}: {
+  label: string;
+  score: number | null;
   highlight?: boolean;
 }) {
-  const color = score >= 80 ? "text-green-500" : score >= 60 ? "text-yellow-500" : "text-red-500";
-  
+  const color = score === null ? "text-muted-foreground" : score >= 80 ? "text-green-500" : score >= 60 ? "text-yellow-500" : "text-red-500";
+
   return (
     <div className={`text-center p-3 rounded-lg ${highlight ? "bg-primary/10" : "bg-muted/50"}`}>
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className={`text-2xl font-bold font-display ${highlight ? "text-primary" : color}`}>
-        {score}
+        {score ?? "N/A"}
       </p>
-      <Progress 
-        value={score} 
-        className={`h-1 mt-1 ${highlight ? "[&>div]:bg-primary" : ""}`} 
+      <Progress
+        value={score ?? 0}
+        className={`h-1 mt-1 ${highlight ? "[&>div]:bg-primary" : ""}`}
       />
     </div>
   );

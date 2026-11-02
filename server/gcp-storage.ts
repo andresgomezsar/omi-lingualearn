@@ -70,7 +70,7 @@ function getStorage(): Storage {
         projectId: credentials.project_id,
       });
     } catch (error) {
-      throw new Error("Failed to parse GCP_SERVICE_ACCOUNT_JSON: " + error);
+      throw new Error("Invalid GCP service account configuration");
     }
   }
   return storage;
@@ -116,7 +116,7 @@ export async function uploadAudioChunk(
   });
 
   const gcpUri = `gs://${getBucketName()}/${filePath}`;
-  console.log(`Uploaded audio chunk to ${gcpUri} (folder: ${folderId})`);
+  /* Private payloads are not logged. */
   return gcpUri;
 }
 
@@ -157,28 +157,36 @@ export async function uploadCompiledWav(
   });
 
   const gcpUri = `gs://${getBucketName()}/${filePath}`;
-  console.log(`Uploaded compiled WAV to ${gcpUri} (folder: ${folderId}, ${wavData.length} bytes)`);
+  /* Private payloads are not logged. */
   return { gcpUri, fileSize: wavData.length };
 }
 
 /**
  * Download audio chunk from GCP bucket
  */
+export function authorizedObjectPath(uri: string): string {
+  const uid = process.env.OMI_UID;
+  if (!uid || !process.env.GCP_BUCKET_NAME || typeof uri !== "string") throw new Error("Audio identity is not configured");
+  const prefix = `gs://${process.env.GCP_BUCKET_NAME}/${generateFolderIdFromOmiUid(uid)}/`;
+  if (!uri.startsWith(prefix)) throw new Error("Audio object outside configured account");
+  const path = uri.slice(`gs://${process.env.GCP_BUCKET_NAME}/`.length);
+  if (!/^[a-zA-Z0-9_./-]+$/.test(path) || path.split("/").some(part => !part || part === "." || part === "..")) throw new Error("Invalid object path");
+  return path;
+}
+
 export async function downloadAudioChunk(gcpUri: string): Promise<Buffer> {
-  const storage = getStorage();
-  
-  // Parse gs:// URI
-  const match = gcpUri.match(/^gs:\/\/([^/]+)\/(.+)$/);
-  if (!match) {
-    throw new Error(`Invalid GCP URI: ${gcpUri}`);
-  }
-  
-  const [, bucketNameFromUri, filePath] = match;
-  const bucket = storage.bucket(bucketNameFromUri);
-  const file = bucket.file(filePath);
-  
-  const [contents] = await file.download();
-  return contents;
+  const path = authorizedObjectPath(gcpUri);
+  const stream = getStorage().bucket(getBucketName()).file(path).createReadStream();
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  try {
+    for await (const chunk of stream) {
+      bytes += chunk.length;
+      if (bytes > 6 * 1024 * 1024) throw new Error("Audio object exceeds 6 MiB");
+      chunks.push(Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  } finally { stream.destroy(); }
 }
 
 /**
@@ -193,7 +201,7 @@ export async function listAudioChunks(
 
   const folderId = generateFolderIdFromOmiUid(omiUid);
   const prefix = `${folderId}/${sessionId}/chunks/`;
-  const [files] = await bucket.getFiles({ prefix });
+  const [files] = await bucket.getFiles({ prefix, maxResults: 100, autoPaginate: false });
 
   return files.map(file => `gs://${getBucketName()}/${file.name}`);
 }
@@ -202,17 +210,9 @@ export async function listAudioChunks(
  * Generate a signed URL for audio file access (valid for 1 hour)
  */
 export async function getSignedUrl(gcpUri: string): Promise<string> {
-  const storage = getStorage();
-  
-  const match = gcpUri.match(/^gs:\/\/([^/]+)\/(.+)$/);
-  if (!match) {
-    throw new Error(`Invalid GCP URI: ${gcpUri}`);
-  }
-  
-  const [, bucketNameFromUri, filePath] = match;
-  const bucket = storage.bucket(bucketNameFromUri);
-  const file = bucket.file(filePath);
-  
+  const path = authorizedObjectPath(gcpUri);
+  const file = getStorage().bucket(getBucketName()).file(path);
+
   const [url] = await file.getSignedUrl({
     version: "v4",
     action: "read",
@@ -229,34 +229,15 @@ export async function getSignedUrl(gcpUri: string): Promise<string> {
  * Get compiled audio files for a user within a time range
  * Used for finding audio files that correspond to a challenge response
  */
-export async function getCompiledAudioInTimeRange(
-  omiUid: string,
-  startTime: Date,
-  endTime: Date
-): Promise<string[]> {
-  const storage = getStorage();
-  const bucket = storage.bucket(getBucketName());
-
-  const folderId = generateFolderIdFromOmiUid(omiUid);
-  const prefix = `${folderId}/compiled/`;
-  const [files] = await bucket.getFiles({ prefix });
-
-  const startMs = startTime.getTime();
-  const endMs = endTime.getTime();
-
-  // Filter files by timestamp in filename (format: {startMs}_{endMs}.wav)
-  const relevantFiles = files.filter(file => {
-    const match = file.name.match(/(\d+)_(\d+)\.wav$/);
-    if (!match) return false;
-
-    const fileStartMs = parseInt(match[1]);
-    const fileEndMs = parseInt(match[2]);
-
-    // Check if file overlaps with our time range
-    return (fileStartMs <= endMs && fileEndMs >= startMs);
-  });
-
-  return relevantFiles.map(file => `gs://${getBucketName()}/${file.name}`);
+export async function getCompiledAudioInTimeRange(omiUid: string, startTime: Date, endTime: Date): Promise<string[]> {
+  if (omiUid !== process.env.OMI_UID) throw new Error("Account mismatch");
+  const { storage: metadata } = await import("./storage");
+  const user = await metadata.getUserByOmiUid(omiUid);
+  if (!user) return [];
+  const files = await metadata.getCompiledAudioFilesInRange(user.id, startTime, endTime);
+  if (files.length > 8) throw new Error("Too many audio files in range");
+  for (const file of files) authorizedObjectPath(file.gcpUri);
+  return files.map(file => file.gcpUri);
 }
 
 export function isConfigured(): boolean {
@@ -277,7 +258,7 @@ export async function testConnection(): Promise<boolean> {
     await bucket.getFiles({ maxResults: 1 });
     return true;
   } catch (error) {
-    console.error("GCP connection test failed:", error);
+    /* Private payloads are not logged. */
     return false;
   }
 }

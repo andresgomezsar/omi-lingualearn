@@ -51,7 +51,7 @@ export function AppSidebar({ streak = 0, xp = 0, level = 1 }: AppSidebarProps) {
             <Zap className="h-6 w-6 text-white" />
           </div>
           <div>
-            <h1 className="font-display font-bold text-xl text-foreground">LinguaFlow</h1>
+            <h1 className="font-display font-bold text-xl text-foreground">LinguaLearn</h1>
             <p className="text-xs text-muted-foreground">Learn naturally</p>
           </div>
         </Link>

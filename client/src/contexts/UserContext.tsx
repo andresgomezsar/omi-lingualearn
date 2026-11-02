@@ -1,97 +1,58 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from "react";
-import { apiRequest } from "@/lib/queryClient";
+import { createContext, useContext, useState, useEffect, useRef, ReactNode } from "react";
+import { apiRequest, queryClient, clearPrivateCache } from "@/lib/queryClient";
 
 interface User {
-  id: string;
-  username: string;
-  omiUid: string | null;
-  targetLanguage: string | null;
-  nativeLanguage: string | null;
-  streak: number;
-  totalXp: number;
-  level: number;
+  id: string; username: string; omiUid: string | null;
+  targetLanguage: string | null; nativeLanguage: string | null;
+  streak: number; totalXp: number; level: number;
 }
-
 interface UserContextType {
-  user: User | null;
-  isLoading: boolean;
-  isAuthenticated: boolean;
-  login: (userIdOrOmiUid: string) => Promise<void>;
-  logout: () => void;
-  error: string | null;
+  user: User | null; isLoading: boolean; isAuthenticated: boolean;
+  login: (token: string) => Promise<void>; logout: () => Promise<void>; error: string | null;
 }
-
 const UserContext = createContext<UserContextType | undefined>(undefined);
-
-const USER_KEY = "omi_lingualearn_user_id";
-
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // Auto-login on mount if user ID is stored
+  const generation = useRef(0);
   useEffect(() => {
-    const storedUserId = localStorage.getItem(USER_KEY);
-    if (storedUserId) {
-      fetchUser(storedUserId).finally(() => setIsLoading(false));
-    } else {
-      setIsLoading(false);
-    }
+    localStorage.removeItem("omi_lingualearn_user_id");
+    const controller = new AbortController();
+    const current = ++generation.current;
+    fetch("/api/auth/session", { credentials: "include", signal: controller.signal })
+      .then(async res => res.ok ? res.json() : null)
+      .then(data => { if (current === generation.current) setUser(data); })
+      .catch(() => { if (current === generation.current) setUser(null); })
+      .finally(() => { if (current === generation.current) setIsLoading(false); });
+    return () => { controller.abort(); generation.current++; };
   }, []);
-
-  const fetchUser = async (userIdOrOmiUid: string) => {
+  const login = async (token: string) => {
+    const current = ++generation.current;
+    setIsLoading(true); setUser(null); setError(null);
+    await clearPrivateCache();
     try {
-      setError(null);
-      setIsLoading(true);
-
-      // Try to fetch user profile
-      const res = await apiRequest("GET", `/api/user/profile?userId=${encodeURIComponent(userIdOrOmiUid)}`);
-      const userData = await res.json();
-
-      setUser(userData);
-      localStorage.setItem(USER_KEY, userData.id);
+      const res = await apiRequest("POST", "/api/auth/session", { token });
+      const data = await res.json();
+      if (current === generation.current) setUser(data);
     } catch (err) {
-      console.error("Failed to fetch user:", err);
-      setError("Invalid user ID or Omi UID. Please check and try again.");
-      localStorage.removeItem(USER_KEY);
-      setUser(null);
+      await clearPrivateCache();
+      if (current === generation.current) setError("Could not sign in. Check your access token and try again.");
       throw err;
-    } finally {
-      setIsLoading(false);
-    }
+    } finally { if (current === generation.current) setIsLoading(false); }
   };
-
-  const login = async (userIdOrOmiUid: string) => {
-    await fetchUser(userIdOrOmiUid);
+  const logout = async () => {
+    generation.current++;
+    setIsLoading(true); setUser(null); setError(null);
+    await clearPrivateCache();
+    try { await apiRequest("DELETE", "/api/auth/session"); }
+    catch { setError("Server sign-out failed. Retry before sharing this browser."); }
+    finally { await clearPrivateCache(); setIsLoading(false); }
   };
-
-  const logout = () => {
-    setUser(null);
-    setError(null);
-    localStorage.removeItem(USER_KEY);
-  };
-
-  return (
-    <UserContext.Provider
-      value={{
-        user,
-        isLoading,
-        isAuthenticated: !!user,
-        login,
-        logout,
-        error,
-      }}
-    >
-      {children}
-    </UserContext.Provider>
-  );
+  return <UserContext.Provider value={{ user, isLoading, isAuthenticated: !!user, login, logout, error }}>{children}</UserContext.Provider>;
 }
-
 export function useUser() {
   const context = useContext(UserContext);
-  if (context === undefined) {
-    throw new Error("useUser must be used within a UserProvider");
-  }
+  if (!context) throw new Error("useUser must be used within a UserProvider");
   return context;
 }

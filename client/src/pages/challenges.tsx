@@ -19,54 +19,6 @@ interface ChallengeDisplay {
   completed: boolean;
 }
 
-const mockChallenges: ChallengeDisplay[] = [
-  {
-    id: 1,
-    originalText: "I go to school yesterday",
-    correctedText: "I went to school yesterday",
-    explanation: "Use past tense 'went' instead of present tense 'go' when talking about past events.",
-    category: "grammar",
-    xpEarned: 25,
-    completed: false,
-  },
-  {
-    id: 2,
-    originalText: "She don't like pizza",
-    correctedText: "She doesn't like pizza",
-    explanation: "Third person singular (he/she/it) requires 'doesn't' instead of 'don't'.",
-    category: "grammar",
-    xpEarned: 25,
-    completed: false,
-  },
-  {
-    id: 3,
-    originalText: "I'm very agree with you",
-    correctedText: "I strongly agree with you",
-    explanation: "Use 'strongly' or 'completely' with 'agree', not 'very'.",
-    category: "vocabulary",
-    xpEarned: 30,
-    completed: false,
-  },
-  {
-    id: 4,
-    originalText: "The informations are correct",
-    correctedText: "The information is correct",
-    explanation: "'Information' is an uncountable noun and doesn't have a plural form.",
-    category: "grammar",
-    xpEarned: 25,
-    completed: true,
-  },
-  {
-    id: 5,
-    originalText: "I have been to Paris last year",
-    correctedText: "I went to Paris last year",
-    explanation: "Use simple past with specific time expressions like 'last year', not present perfect.",
-    category: "grammar",
-    xpEarned: 30,
-    completed: true,
-  },
-];
-
 function convertChallenge(challenge: DailyChallenge): ChallengeDisplay {
   return {
     id: challenge.id,
@@ -95,14 +47,14 @@ export default function Challenges() {
       queryClient.invalidateQueries({ queryKey: ["/api/stats/overview"] });
       toast({
         title: "Challenge completed!",
-        description: "+25 XP earned",
+        description: "Your review has been recorded",
       });
     },
   });
 
   const displayChallenges: ChallengeDisplay[] = challenges 
     ? challenges.map(convertChallenge) 
-    : mockChallenges;
+    : [];
   const pendingChallenges = displayChallenges.filter(c => !c.completed);
   const completedChallenges = displayChallenges.filter(c => c.completed);
 

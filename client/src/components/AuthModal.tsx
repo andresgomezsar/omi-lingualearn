@@ -27,6 +27,7 @@ export function AuthModal() {
 
     try {
       await login(userInput.trim());
+      setUserInput("");
       setShowSuccess(true);
     } catch (err) {
       // Error is handled by UserContext
@@ -51,7 +52,7 @@ export function AuthModal() {
                 Welcome to LinguaLearn
               </DialogTitle>
               <DialogDescription className="mt-1">
-                Get your UID from the Omi app to continue
+                Sign in to your self-hosted workspace
               </DialogDescription>
             </div>
           </div>
@@ -59,11 +60,11 @@ export function AuthModal() {
 
         <form onSubmit={handleSubmit} className="space-y-4 mt-4">
           <div className="space-y-2">
-            <Label htmlFor="user-id">Omi User ID</Label>
+            <Label htmlFor="user-id">Operator access token</Label>
             <Input
               id="user-id"
               type="password"
-              placeholder="Paste your UID from Omi app"
+              placeholder="Enter your workspace access token"
               value={userInput}
               onChange={(e) => setUserInput(e.target.value)}
               disabled={isLoading || showSuccess}
@@ -71,12 +72,7 @@ export function AuthModal() {
               autoFocus
             />
             <div className="text-xs text-muted-foreground space-y-1">
-              <p className="font-medium">To find your UID:</p>
-              <ol className="list-decimal list-inside space-y-0.5 ml-1">
-                <li>Open the Omi app on your phone</li>
-                <li>Go to Settings → Profile → User ID</li>
-                <li>Copy your User ID and paste it here</li>
-              </ol>
+              <p>Use the access token configured by the person running this workspace.</p>
             </div>
           </div>
 
@@ -131,8 +127,7 @@ export function AuthModal() {
 
           <div className="pt-4 border-t">
             <p className="text-xs text-muted-foreground text-center">
-              Your Omi UID is stored securely in your browser and acts as your authentication key.
-              Keep it private and don't share it with others.
+              Your access token is exchanged for a private session cookie. It is never saved in browser storage.
             </p>
           </div>
         </form>

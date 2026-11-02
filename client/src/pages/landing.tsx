@@ -19,7 +19,7 @@ const features = [
   {
     icon: <Headphones className="h-6 w-6" />,
     title: "Passive Learning",
-    description: "Learn from your real conversations. Just wear your Omi necklace and speak naturally.",
+    description: "Use conversation memories from an authenticated Omi relay to make practice more personal.",
   },
   {
     icon: <Brain className="h-6 w-6" />,
@@ -34,12 +34,12 @@ const features = [
   {
     icon: <Clock className="h-6 w-6" />,
     title: "Spaced Repetition",
-    description: "SM-2 algorithm ensures you review at optimal intervals for long-term retention.",
+    description: "SM-2 scheduling helps you revisit corrections over time.",
   },
   {
     icon: <BarChart3 className="h-6 w-6" />,
     title: "Track Progress",
-    description: "Watch your CEFR level improve as you master grammar and vocabulary.",
+    description: "Track completed reviews and model feedback from your practice sessions.",
   },
   {
     icon: <Sparkles className="h-6 w-6" />,
@@ -52,7 +52,7 @@ const steps = [
   {
     number: "01",
     title: "Wear Your Omi",
-    description: "Put on your Omi necklace and go about your day. Have conversations naturally.",
+    description: "Connect a verified Omi relay to your self-hosted workspace, or explore seeded demo data.",
   },
   {
     number: "02",
@@ -75,7 +75,7 @@ export default function Landing() {
             <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-primary to-teal-600 flex items-center justify-center">
               <Zap className="h-5 w-5 text-white" />
             </div>
-            <span className="font-display font-bold text-xl">LinguaFlow</span>
+            <span className="font-display font-bold text-xl">LinguaLearn</span>
           </div>
           <div className="flex items-center gap-3">
             <Button variant="ghost" asChild>
@@ -105,7 +105,7 @@ export default function Landing() {
                   className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary/10 text-primary text-sm font-medium"
                 >
                   <Mic className="h-4 w-4" />
-                  Powered by Omi AI Necklace
+                  DevHouse prototype · Omi + Gemini
                 </motion.div>
                 <h1 className="text-5xl md:text-6xl lg:text-7xl font-bold font-display text-foreground leading-tight">
                   Learn languages{" "}
@@ -113,30 +113,30 @@ export default function Landing() {
                 </h1>
                 <p className="text-xl text-muted-foreground max-w-lg">
                   Turn everyday conversations into personalized language lessons. 
-                  Your Omi necklace records, our AI teaches.
+                  A self-hosted experiment in turning personal memories into deliberate practice.
                 </p>
               </div>
 
               <div className="flex flex-col sm:flex-row gap-4">
                 <Button size="lg" className="text-lg px-8" asChild>
                   <Link href="/dashboard">
-                    Start Learning Free
+                    Open Workspace
                     <ArrowRight className="h-5 w-5 ml-2" />
                   </Link>
                 </Button>
-                <Button size="lg" variant="outline" className="text-lg px-8">
-                  Watch Demo
+                <Button size="lg" variant="outline" className="text-lg px-8" asChild>
+                  <a href="https://github.com/andresgomezsar/omi-lingualearn" target="_blank" rel="noreferrer">View source & setup</a>
                 </Button>
               </div>
 
               <div className="flex items-center gap-6 text-sm text-muted-foreground">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="h-4 w-4 text-green-500" />
-                  <span>No credit card required</span>
+                  <span>Self-hosted prototype</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="h-4 w-4 text-green-500" />
-                  <span>Works with any Omi device</span>
+                  <span>Optional Omi relay</span>
                 </div>
               </div>
             </motion.div>
@@ -150,6 +150,7 @@ export default function Landing() {
               <div className="absolute inset-0 bg-gradient-to-br from-primary/20 to-teal-600/20 rounded-3xl blur-3xl" />
               <Card className="relative bg-card/80 backdrop-blur border-2">
                 <CardContent className="p-8">
+                  <p className="text-xs text-muted-foreground mb-4">Illustrative practice example</p>
                   <div className="space-y-6">
                     <div className="flex items-center gap-3">
                       <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
@@ -284,7 +285,7 @@ export default function Landing() {
               Ready to learn naturally?
             </h2>
             <p className="text-xl text-white/80 max-w-2xl mx-auto">
-              Join thousands of learners who are mastering new languages through their everyday conversations.
+              Explore the prototype, follow the setup guide, and see how conversation context can shape a speaking challenge.
             </p>
             <Button 
               size="lg" 
@@ -293,7 +294,7 @@ export default function Landing() {
               asChild
             >
               <Link href="/dashboard">
-                Get Started Free
+                Open Workspace
                 <ArrowRight className="h-5 w-5 ml-2" />
               </Link>
             </Button>
@@ -308,7 +309,7 @@ export default function Landing() {
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-teal-600 flex items-center justify-center">
                 <Zap className="h-4 w-4 text-white" />
               </div>
-              <span className="font-display font-bold">LinguaFlow</span>
+              <span className="font-display font-bold">LinguaLearn</span>
             </div>
             <p className="text-sm text-muted-foreground">
               Built with Omi AI Necklace and Gemini

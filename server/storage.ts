@@ -483,7 +483,7 @@ export class MemStorage implements IStorage {
 
     if (challenge.learningItemId) {
       const item = await this.getLearningItem(challenge.learningItemId);
-      if (item) {
+      if (item && item.userId === challenge.userId) {
         const sm2Update = this.calculateSM2(item, quality);
         await this.updateLearningItem(challenge.learningItemId, sm2Update);
       }
@@ -741,19 +741,20 @@ export class MemStorage implements IStorage {
 
     return {
       todayCompleted: todayChallenges.filter(c => c.completed).length,
-      todayTotal: todayChallenges.length || 5,
-      weeklyProgress: 72,
+      todayTotal: todayChallenges.length,
+      weeklyProgress: Math.min(100, Math.round((await this.getWeeklyStats(userId)).reduce((n, day) => n + day.count, 0) / 35 * 100)),
       totalItems: items.length,
       streak: user?.streak || 0,
     };
   }
 
   async getWeeklyStats(userId: string): Promise<{ date: string; count: number }[]> {
-    const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    return days.map((day) => ({
-      date: day,
-      count: Math.floor(Math.random() * 8),
-    }));
+    const completed = Array.from(this.dailyChallenges.values()).filter(c => c.userId === userId && c.completedAt);
+    return Array.from({ length: 7 }, (_, i) => {
+      const date = new Date(); date.setDate(date.getDate() - (6 - i)); date.setHours(0, 0, 0, 0);
+      const next = new Date(date); next.setDate(next.getDate() + 1);
+      return { date: date.toLocaleDateString("en-US", { weekday: "short" }), count: completed.filter(c => c.completedAt! >= date && c.completedAt! < next).length };
+    });
   }
 
   async getProgressStats(userId: string): Promise<{
@@ -771,10 +772,10 @@ export class MemStorage implements IStorage {
     return {
       totalChallenges: allChallenges.length,
       completedChallenges: completed.length,
-      accuracy: 91,
-      weeklyStreak: 5,
-      averageDaily: 4.2,
-      cefrLevel: "B1",
+      accuracy: completed.length ? Math.round(completed.reduce((n, c) => n + (c.quality || 0), 0) / (completed.length * 5) * 100) : 0,
+      weeklyStreak: (await this.getWeeklyStats(userId)).filter(d => d.count > 0).length,
+      averageDaily: Number(((await this.getWeeklyStats(userId)).reduce((n, d) => n + d.count, 0) / 7).toFixed(1)),
+      cefrLevel: "Not assessed",
     };
   }
 
@@ -924,7 +925,7 @@ export class MemStorage implements IStorage {
     // Return most recently created user (excluding demo-user)
     return users
       .filter(u => u.id !== 'demo-user')
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+      .sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0))[0];
   }
 
   // User preferences
@@ -970,6 +971,10 @@ export class MemStorage implements IStorage {
     Array.from(this.lessons.entries()).forEach(([id, lesson]) => {
       if (lesson.userId === userId) this.lessons.delete(id);
     });
+    for (const [id, record] of this.audioChunks) if (record.userId === userId) this.audioChunks.delete(id);
+    for (const [id, record] of this.transcriptSegments) if (record.userId === userId) this.transcriptSegments.delete(id);
+    for (const [id, record] of this.audioAnalyses) if (record.userId === userId) this.audioAnalyses.delete(id);
+    for (const [id, record] of this.compiledAudioFiles) if (record.userId === userId) this.compiledAudioFiles.delete(id);
     // Reset user stats
     const user = this.users.get(userId);
     if (user) {

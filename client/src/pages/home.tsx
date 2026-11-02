@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { 
-  TrendingUp, 
-  Zap, 
+import {
+  TrendingUp,
+  Zap,
   Calendar,
   Sparkles,
   BookOpen,
@@ -61,13 +61,13 @@ export default function Home() {
                     {statsLoading ? (
                       <Skeleton className="h-8 w-16" />
                     ) : (
-                      `${stats?.todayCompleted || 0}/${stats?.todayTotal || 5}`
+                      `${stats?.todayCompleted || 0}/${stats?.todayTotal ?? 0}`
                     )}
                   </p>
                 </div>
-                <ProgressRing 
-                  progress={todayProgress} 
-                  size={64} 
+                <ProgressRing
+                  progress={todayProgress}
+                  size={64}
                   strokeWidth={6}
                 >
                   <span className="text-sm font-bold">{Math.round(todayProgress)}%</span>
@@ -85,8 +85,7 @@ export default function Home() {
           <StatsCard
             title="Weekly Progress"
             value={statsLoading ? "..." : `${stats?.weeklyProgress || 0}%`}
-            trend="up"
-            trendValue="+12% vs last week"
+            subtitle="Toward 35 reviews per week"
             icon={<TrendingUp className="h-5 w-5" />}
           />
         </motion.div>
@@ -113,9 +112,9 @@ export default function Home() {
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div className="space-y-1">
-                  <p className="text-sm text-white/80">XP Earned Today</p>
+                  <p className="text-sm text-white/80">Completed Today</p>
                   <p className="text-3xl font-bold font-display" data-testid="stat-xp-today">
-                    +125
+                    {stats?.todayCompleted ?? 0}
                   </p>
                 </div>
                 <Sparkles className="h-10 w-10 text-white/80" />
@@ -149,16 +148,8 @@ export default function Home() {
               </div>
             </CardHeader>
             <CardContent>
-              <WeeklyHeatmap 
-                data={heatmapData || [
-                  { date: "Mon", count: 5 },
-                  { date: "Tue", count: 3 },
-                  { date: "Wed", count: 7 },
-                  { date: "Thu", count: 2 },
-                  { date: "Fri", count: 4 },
-                  { date: "Sat", count: 0 },
-                  { date: "Sun", count: 1 },
-                ]} 
+              <WeeklyHeatmap
+                data={heatmapData || []}
               />
             </CardContent>
           </Card>
@@ -172,7 +163,7 @@ export default function Home() {
                 <div className="space-y-2">
                   <h3 className="font-display font-semibold">Quick Tip</h3>
                   <p className="text-sm text-white/90">
-                    Wear your Omi during daily conversations for the best learning results. The more you speak, the more personalized your challenges become!
+                    Review one correction and try it in a new sentence. Use a verified Omi relay when you are ready to connect your own memories.
                   </p>
                 </div>
               </div>

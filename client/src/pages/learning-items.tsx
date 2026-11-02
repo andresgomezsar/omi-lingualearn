@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { Headphones, Search, Clock, CheckCircle2, AlertCircle } from "lucide-react";
@@ -8,60 +9,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { formatDistanceToNow } from "date-fns";
 import type { LearningItem } from "@shared/schema";
 
-const mockItems: LearningItem[] = [
-  {
-    id: 1,
-    userId: "user1",
-    sessionId: "session1",
-    originalText: "I go to school yesterday",
-    correctedText: "I went to school yesterday",
-    explanation: "Use past tense for past events",
-    category: "grammar",
-    easeFactor: 2.5,
-    interval: 1,
-    repetitions: 0,
-    dueDate: new Date(),
-    lastReviewed: null,
-    createdAt: new Date(Date.now() - 86400000),
-  },
-  {
-    id: 2,
-    userId: "user1",
-    sessionId: "session1",
-    originalText: "She don't like pizza",
-    correctedText: "She doesn't like pizza",
-    explanation: "Third person singular requires 'doesn't'",
-    category: "grammar",
-    easeFactor: 2.6,
-    interval: 3,
-    repetitions: 1,
-    dueDate: new Date(Date.now() + 86400000 * 2),
-    lastReviewed: new Date(Date.now() - 86400000),
-    createdAt: new Date(Date.now() - 86400000 * 3),
-  },
-  {
-    id: 3,
-    userId: "user1",
-    sessionId: "session2",
-    originalText: "I'm very agree",
-    correctedText: "I strongly agree",
-    explanation: "Use 'strongly' with 'agree', not 'very'",
-    category: "vocabulary",
-    easeFactor: 2.7,
-    interval: 6,
-    repetitions: 2,
-    dueDate: new Date(Date.now() + 86400000 * 5),
-    lastReviewed: new Date(Date.now() - 86400000 * 2),
-    createdAt: new Date(Date.now() - 86400000 * 7),
-  },
-];
-
 export default function LearningItems() {
   const { data: items, isLoading } = useQuery<LearningItem[]>({
     queryKey: ["/api/learning-items"],
   });
 
-  const displayItems = items || mockItems;
+  const [search, setSearch] = useState("");
+  const displayItems = (items || []).filter(item => `${item.originalText} ${item.correctedText} ${item.explanation}`.toLowerCase().includes(search.toLowerCase()));
 
   const isDue = (item: LearningItem) => {
     if (!item.dueDate) return true;
@@ -94,8 +48,10 @@ export default function LearningItems() {
 
         <div className="relative max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input 
-            placeholder="Search items..." 
+          <Input
+            placeholder="Search items..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
             className="pl-10"
             data-testid="input-search-items"
           />
@@ -115,7 +71,7 @@ export default function LearningItems() {
               Due for Review ({dueItems.length})
             </h2>
           </div>
-          
+
           <div className="grid gap-3">
             {isLoading ? (
               [1, 2].map((i) => <Skeleton key={i} className="h-24 rounded-lg" />)
@@ -147,7 +103,7 @@ export default function LearningItems() {
             Upcoming ({upcomingItems.length})
           </h2>
         </div>
-        
+
         <div className="grid gap-3">
           {isLoading ? (
             [1, 2, 3].map((i) => <Skeleton key={i} className="h-24 rounded-lg" />)
@@ -181,7 +137,7 @@ function LearningItemCard({ item, due = false }: { item: LearningItem; due?: boo
   };
 
   return (
-    <Card 
+    <Card
       className={`transition-all duration-200 ${due ? "border-orange-500/30" : ""}`}
       data-testid={`card-learning-item-${item.id}`}
     >
@@ -189,8 +145,8 @@ function LearningItemCard({ item, due = false }: { item: LearningItem; due?: boo
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 space-y-2">
             <div className="flex items-center gap-2 flex-wrap">
-              <Badge 
-                variant="secondary" 
+              <Badge
+                variant="secondary"
                 className={categoryColors[item.category || "grammar"]}
               >
                 {item.category}
@@ -199,7 +155,7 @@ function LearningItemCard({ item, due = false }: { item: LearningItem; due?: boo
                 {item.repetitions || 0} reviews
               </span>
             </div>
-            
+
             <div className="space-y-1">
               <p className="text-sm">
                 <span className="text-muted-foreground line-through">{item.originalText}</span>
@@ -209,7 +165,7 @@ function LearningItemCard({ item, due = false }: { item: LearningItem; due?: boo
               </p>
             </div>
           </div>
-          
+
           <div className="text-right text-xs text-muted-foreground">
             {due ? (
               <span className="text-orange-500 font-medium">Due now</span>

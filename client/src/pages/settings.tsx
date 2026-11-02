@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
@@ -35,7 +35,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
 interface UserProfile {
-  id: number;
+  id: string;
   username: string;
   omiUid: string | null;
   nativeLanguage: string | null;
@@ -55,6 +55,10 @@ export default function Settings() {
   const { data: profile, isLoading } = useQuery<UserProfile>({
     queryKey: ["/api/user/profile"],
   });
+
+  const [nativeLanguage, setNativeLanguage] = useState("");
+  const [targetLanguage, setTargetLanguage] = useState("");
+  useEffect(() => { if (profile) { setNativeLanguage(profile.nativeLanguage || "English"); setTargetLanguage(profile.targetLanguage || "Spanish"); } }, [profile]);
 
   const updatePreferencesMutation = useMutation({
     mutationFn: async (data: {
@@ -90,7 +94,7 @@ export default function Settings() {
       queryClient.invalidateQueries();
       toast({
         title: "Data reset complete",
-        description: "All your learning data has been cleared",
+        description: "Local learning data cleared. Cloud recordings require separate deletion.",
       });
     },
     onError: () => {
@@ -126,10 +130,7 @@ export default function Settings() {
 
   const handleLogout = () => {
     logout();
-    toast({
-      title: "Logged out",
-      description: "You have been logged out successfully",
-    });
+
   };
 
   return (
@@ -194,7 +195,7 @@ export default function Settings() {
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                This is your unique identifier. Keep it private - it acts as your authentication key.
+                This identifies your workspace. Sign-in uses a separate operator access token.
               </p>
             </div>
 
@@ -205,12 +206,8 @@ export default function Settings() {
                 </Label>
                 <Input
                   id="native-language"
-                  value={profile?.nativeLanguage || "English"}
-                  onChange={(e) => {
-                    updatePreferencesMutation.mutate({
-                      nativeLanguage: e.target.value
-                    });
-                  }}
+                  value={nativeLanguage}
+                  onChange={(e) => setNativeLanguage(e.target.value)}
                   placeholder="e.g., English"
                   className="text-sm"
                 />
@@ -222,18 +219,15 @@ export default function Settings() {
                 </Label>
                 <Input
                   id="target-language"
-                  value={profile?.targetLanguage || "Spanish"}
-                  onChange={(e) => {
-                    updatePreferencesMutation.mutate({
-                      targetLanguage: e.target.value
-                    });
-                  }}
+                  value={targetLanguage}
+                  onChange={(e) => setTargetLanguage(e.target.value)}
                   placeholder="e.g., Spanish"
                   className="text-sm"
                 />
               </div>
             </div>
 
+            <Button disabled={updatePreferencesMutation.isPending || !nativeLanguage.trim() || !targetLanguage.trim()} onClick={() => updatePreferencesMutation.mutate({ nativeLanguage: nativeLanguage.trim(), targetLanguage: targetLanguage.trim() })}>Save languages</Button>
             <div className="grid grid-cols-2 gap-4 pt-4">
               <div className="text-center p-3 bg-muted/30 rounded-lg">
                 <p className="text-2xl font-bold text-foreground">{profile?.streak || 0}</p>
