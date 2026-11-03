@@ -1,8 +1,8 @@
 # Omi LinguaLearn
 
-**Make your conversations your next language lesson.**
+**Learn languages naturally, one conversation at a time.**
 
-LinguaLearn uses memories from [Omi](https://github.com/BasedHardware/omi)—an open-source AI wearable necklace and conversation platform—to create speaking challenges drawn from your daily life. Practice with Gemini feedback, then revisit useful corrections through spaced repetition.
+The idea behind LinguaLearn is simple: the mistakes you make in everyday conversations can become your next lesson. Memories from [Omi](https://github.com/BasedHardware/omi)—an open-source AI wearable necklace and conversation platform—ground speaking challenges in your own life. Gemini feedback and spaced-repetition review turn corrections into practice.
 
 Built for DevHouse as a self-hosted prototype.
 
@@ -48,6 +48,8 @@ If port 5000 is occupied, change both `PORT` and `PUBLIC_ORIGIN` in `.env` to th
 ## Setup and limitations
 
 This is a self-hosted, single-operator portfolio prototype, not a multi-user hosted service or Omi App Store release. Data and sessions live in memory and disappear on restart. The Drizzle schema describes a future persistence layer; PostgreSQL is not connected to the runtime. Omi ingestion is disabled without a trusted authenticated relay; Gemini and cloud audio are optional. See [self-hosting, webhook, and privacy details](docs/self-hosting.md) before connecting real data or deploying remotely.
+
+Automatic corrections currently come only from conversations classified as language practice. Other Omi conversations can provide context for challenges, but the prototype does not yet turn their mistakes into review items.
 
 Run `npm run check`, `npm test`, and `npm run build` to verify changes. Run `npm start` after building to serve the production bundle.
 
