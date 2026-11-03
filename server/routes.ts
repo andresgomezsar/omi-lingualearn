@@ -410,6 +410,7 @@ export async function registerRoutes(
           
           // Concatenate raw PCM audio
           const compiledPcm = Buffer.concat(audioBuffers);
+          if (compiledPcm.length + 44 > 6 * 1024 * 1024) throw new Error("Compiled session exceeds audio object limit");
           const sampleRate = chunks[0]?.sampleRate || 16000;
           
           // Upload compiled audio with proper WAV header
@@ -417,6 +418,10 @@ export async function registerRoutes(
           const endTime = chunks[chunks.length - 1]?.createdAt || new Date();
           const result = await gcpStorage.uploadCompiledWav(omiUid, compiledPcm, sampleRate, startTime, endTime);
           compiledAudioUri = result.gcpUri;
+          await storage.createCompiledAudioFile({
+            userId: uid, gcpUri: result.gcpUri, startTimestamp: startTime, endTimestamp: endTime,
+            sampleRate, fileSize: result.fileSize, durationMs: Math.round(compiledPcm.length / 2 / sampleRate * 1000),
+          });
           /* Private payloads are not logged. */
 
           // Update analysis with compiled audio URI
