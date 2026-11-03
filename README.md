@@ -1,6 +1,12 @@
 # Omi LinguaLearn
 
-Built for DevHouse, LinguaLearn turns Omi conversation memories into language practice grounded in your own life. It creates personalized speaking challenges, uses Gemini to give feedback, and saves corrections for spaced-repetition review.
+**Make your conversations your next language lesson.**
+
+LinguaLearn uses memories from [Omi](https://github.com/BasedHardware/omi)—an open-source AI wearable necklace and conversation platform—to create speaking challenges drawn from your daily life. Practice with Gemini feedback, then revisit useful corrections through spaced repetition.
+
+Built for DevHouse as a self-hosted prototype.
+
+<p align="center"><a href="https://github.com/BasedHardware/omi"><img src="docs/images/omi-necklace.webp" width="190" alt="Omi wearable necklace" /></a></p>
 
 ## Preview
 
