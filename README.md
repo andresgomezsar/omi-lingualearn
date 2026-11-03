@@ -4,6 +4,16 @@ A language-learning prototype built for DevHouse: turn Omi conversation memories
 
 The interesting engineering work is the connection between everyday conversation and deliberate practice: ingest a memory, extract a useful fact, generate a prompt in the learner's target language, then turn feedback into something to review later.
 
+## Preview
+
+The screenshots show the seeded demo workspace. Omi is disconnected, and AI feedback remains unassessed until the integrations are configured.
+
+![LinguaLearn landing page with an illustrative grammar challenge](docs/screenshots/landing.png)
+
+| Dashboard | Progress |
+| --- | --- |
+| ![Demo dashboard showing challenges, review counts, and connection status](docs/screenshots/dashboard.png) | ![Progress view showing weekly activity and unassessed AI feedback](docs/screenshots/progress.png) |
+
 ## What it does
 
 - React dashboard with speaking challenges, a learning queue, language settings, and progress from recorded activity.
