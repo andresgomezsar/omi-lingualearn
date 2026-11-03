@@ -1,8 +1,6 @@
 # Omi LinguaLearn
 
-A language-learning prototype built for DevHouse: turn Omi conversation memories into personalized speaking challenges, Gemini feedback, and a spaced-repetition practice queue.
-
-The interesting engineering work is the connection between everyday conversation and deliberate practice: ingest a memory, extract a useful fact, generate a prompt in the learner's target language, then turn feedback into something to review later.
+Built for DevHouse, LinguaLearn turns Omi conversation memories into language practice grounded in your own life. It creates personalized speaking challenges, uses Gemini to give feedback, and saves corrections for spaced-repetition review.
 
 ## Preview
 
